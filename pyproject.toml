@@ -33,7 +33,13 @@ dependencies = [
     "tensorflow>=2.20.0",
     "streamlit>=1.58.0",
     "jsonschema",
+    "requests",
 ]
+
+# vLLM is for the jailbreak target + judge servers
+# For jailbreak runs: uv sync --extra vllm
+[project.optional-dependencies]
+vllm = ["vllm"]
 
 [tool.pytest.ini_options]
 junit_logging = "system-out"
