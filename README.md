@@ -20,6 +20,8 @@ ______
 
 ### Setup
 
+For the jailbreak-domain PACE workflow, use [docs/PACE_JAILBREAK.md](docs/PACE_JAILBREAK.md). It covers the persistent target and LLM-judge services, deterministic benchmark acquisition, local tests, launch, monitoring, and recovery.
+
 This code utilizes [ExquisiteNetV2](https://github.com/shyhyawJou/ExquisiteNetV2) which is copied into the sota directory.
 
 Dependencies are managed through pyproject.toml. This package can be installed with pip install . or interacted with through tools such as uv

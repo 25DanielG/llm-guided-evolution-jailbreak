@@ -33,10 +33,8 @@ python-bash-script
 #!/bin/bash
 #SBATCH --job-name=evaluateGene
 #SBATCH -t 4:00:00
-#SBATCH --gres=gpu:1
-#SBATCH -G 1
-#SBATCH --mem 16G
-#SBATCH -c 12
+#SBATCH --mem 8G
+#SBATCH -c 4
 #SBATCH -N 1
 #SBATCH --output=run_job_outputs/evaluation/slurm-%j.out
 ------
@@ -61,10 +59,24 @@ server-sh
 #SBATCH -t 8:00:00
 #SBATCH --nodes=1
 #SBATCH -G 2
-#SBATCH -C "H200"
+#SBATCH -C "H200|H100"
 #SBATCH --mem 160G
 #SBATCH -c 16
 #SBATCH --output=run_job_outputs/server/slurm-%j.out
+------
+
+
+jailbreak-vllm
+------
+#!/bin/bash
+#SBATCH --job-name=Jailbreak_vLLM
+#SBATCH -t 8:00:00
+#SBATCH --nodes=1
+#SBATCH --gres=gpu:2
+#SBATCH -C "H200|H100|A100"
+#SBATCH --mem 96G
+#SBATCH -c 16
+#SBATCH --output=run_job_outputs/jailbreak-vllm/slurm-%j.out
 ------
 
 

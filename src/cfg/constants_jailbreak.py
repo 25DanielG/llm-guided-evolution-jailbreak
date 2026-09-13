@@ -88,9 +88,9 @@ TARGET_VLLM_PORT = int(os.getenv("JB_TARGET_VLLM_PORT", "8001"))
 
 JUDGE_MODEL_PATH = os.getenv(
     "JB_JUDGE_MODEL_PATH",
-    "/storage/ice-shared/vip-vvk/llm_storage/meta-llama/Llama-Guard-3-8B/",
+    "/storage/ice-shared/vip-vvk/llm_storage/meta-llama/Llama-3.1-8B-Instruct/",
 )
-JUDGE_SERVED_NAME = os.getenv("JB_JUDGE_SERVED_NAME", "guard")
+JUDGE_SERVED_NAME = os.getenv("JB_JUDGE_SERVED_NAME", "judge")
 JUDGE_VLLM_PORT = int(os.getenv("JB_JUDGE_VLLM_PORT", "8002"))
 
 BEHAVIORS_PATH = os.getenv("JB_BEHAVIORS_PATH", os.path.join(SOTA_ROOT, "behaviors/curated.csv"))
@@ -149,9 +149,9 @@ NUM_EOT_ELITES = 10
 GENERATION = 0
 PROB_QC = 0.0
 PROB_EOT = 0.25
-num_generations = 3  # small for first validation
-start_population_size = 16
-population_size = 16
+num_generations = int(os.getenv("LLMGE_NUM_GENERATIONS", "1"))
+start_population_size = int(os.getenv("LLMGE_START_POPULATION_SIZE", "4"))
+population_size = int(os.getenv("LLMGE_POPULATION_SIZE", "4"))
 crossover_probability = 0.35
 mutation_probability = 0.8
 num_elites = 4

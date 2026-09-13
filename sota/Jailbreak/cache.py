@@ -30,13 +30,16 @@ def _hash(*parts):
         h.update(b"\x00")
     return h.hexdigest()
 
-def response_key(model_name, messages):
+def response_key(model_name, messages, max_tokens=512, temperature=0.0):
     # messages is a list of {"role","content"} dicts; serialize deterministically.
     flat = "|".join(f"{m.get('role','')}:{m.get('content','')}" for m in messages)
-    return _hash("resp", model_name, flat)
+    return _hash("resp:v2", model_name, max_tokens, temperature, flat)
 
-def verdict_key(judge_model_name, behavior, response):
-    return _hash("verdict", judge_model_name, behavior, response)
+def verdict_key(judge_model_name, judge_mode, rubric_version, behavior, response):
+    return _hash(
+        "verdict:v2", judge_model_name, judge_mode, rubric_version,
+        behavior, response,
+    )
 
 def get(cache_dir, key):
     conn = _get_conn(cache_dir)

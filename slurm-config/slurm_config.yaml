@@ -34,6 +34,47 @@ islands_bash_script: '#!/bin/bash
     --prompt_group {}
 
     '
+jailbreak_vllm_script: '#!/bin/bash
+
+    #SBATCH --job-name=Jailbreak_vLLM
+
+    #SBATCH -t 8:00:00
+
+    #SBATCH --nodes=1
+
+    #SBATCH --gres=gpu:2
+
+    #SBATCH -C "H200|H100|A100"
+
+    #SBATCH --mem 96G
+
+    #SBATCH -c 16
+
+    #SBATCH --output=run_job_outputs/jailbreak-vllm/slurm-%j.out
+
+    echo "launching jailbreak target and judge vLLM services"
+
+    hostname
+
+    module load cuda
+
+    nvidia-smi -L
+
+
+    : "${JB_VLLM_API_KEY:?JB_VLLM_API_KEY must be set}"
+
+    export JB_VLLM_BIN="${JB_VLLM_BIN:-${HOME}/scratch/llmge-vllm/bin/vllm}"
+
+    export JB_JUDGE_MODE="${JB_JUDGE_MODE:-llm}"
+
+    export JB_TARGET_SERVED_NAME="${JB_TARGET_SERVED_NAME:-target}"
+
+    export JB_JUDGE_SERVED_NAME="${JB_JUDGE_SERVED_NAME:-judge}"
+
+
+    bash sota/Jailbreak/serve_vllm.sh
+
+    '
 llm_bash_script: '#!/bin/bash
 
     #SBATCH --job-name=llm_oper
@@ -77,13 +118,9 @@ python_bash_script: '#!/bin/bash
 
     #SBATCH -t 4:00:00
 
-    #SBATCH --gres=gpu:1
+    #SBATCH --mem 8G
 
-    #SBATCH -G 1
-
-    #SBATCH --mem 16G
-
-    #SBATCH -c 12
+    #SBATCH -c 4
 
     #SBATCH -N 1
 
@@ -94,11 +131,7 @@ python_bash_script: '#!/bin/bash
     hostname
 
 
-    module load cuda
-
     module load uv
-
-    export CUDA_VISIBLE_DEVICES=0
 
     unset VIRTUAL_ENV
 

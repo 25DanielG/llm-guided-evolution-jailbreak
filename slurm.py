@@ -11,12 +11,13 @@ def replace_script_configuration(file_path, new_config):
         f.write(new_config if new_config.endswith('\n') else new_config + '\n')
 
 
-def save_to_yaml(llm, python, gpu, islands, file_path=constants.SLURM_CONFIG_DIR):
+def save_to_yaml(llm, python, gpu, islands, jailbreak_vllm, file_path=constants.SLURM_CONFIG_DIR):
     yaml_data = {
         "gpu_selection": gpu,
         "python_bash_script": python,
         "llm_bash_script": llm,
         "islands_bash_script": islands,
+        "jailbreak_vllm_script": jailbreak_vllm,
     }
     with open(f'{file_path}/slurm_config.yaml', 'w') as f:
         yaml.dump(yaml_data, f, indent=4)
@@ -64,6 +65,18 @@ echo "launching LLM Guided Evolution"
 hostname
 module load uv
 
+: "${{JB_VLLM_API_KEY:?JB_VLLM_API_KEY must be set}}"
+export JB_JUDGE_MODE="${{JB_JUDGE_MODE:-llm}}"
+export JB_TARGET_SERVED_NAME="${{JB_TARGET_SERVED_NAME:-target}}"
+export JB_JUDGE_SERVED_NAME="${{JB_JUDGE_SERVED_NAME:-judge}}"
+: "${{JB_BEHAVIORS_PATH:?JB_BEHAVIORS_PATH must identify an approved benchmark CSV}}"
+export JB_BEHAVIORS_PATH
+export JB_N_BEHAVIORS_PER_EVAL="${{JB_N_BEHAVIORS_PER_EVAL:-4}}"
+export JB_MAX_CONCURRENCY="${{JB_MAX_CONCURRENCY:-2}}"
+export JB_CACHE_DIR="${{JB_CACHE_DIR:-${{HOME}}/scratch/jb_cache}}"
+export JB_REQUEST_TIMEOUT="${{JB_REQUEST_TIMEOUT:-120}}"
+export JB_SERVER_READY_TIMEOUT="${{JB_SERVER_READY_TIMEOUT:-1200}}"
+
 export UV_CACHE_DIR="${{TMPDIR:-${{SLURM_TMPDIR:-/tmp}}}}/uv-cache-${{SLURM_JOB_ID:-$$}}"
 mkdir -p "$UV_CACHE_DIR"
 echo "Using UV cache: $UV_CACHE_DIR"
@@ -74,6 +87,9 @@ uv run python run_improved.py {constants.OUTPUT_DIR}
     replace_script_configuration("run.sh", run_sh)
 
     # Generate src/mixt.sh
+    mixt_input_x = os.path.relpath(constants.SLURM_MIXT_INPUT_X, constants.ROOT_DIR)
+    mixt_input_y = os.path.relpath(constants.SLURM_MIXT_INPUT_Y, constants.ROOT_DIR)
+    mixt_output = os.path.relpath(constants.SLURM_MIXT_OUTPUT, constants.ROOT_DIR)
     mixt_sh = sections.get("mixt.sh", "") + f"""
 echo "Launching AIsurBL"
 hostname
@@ -84,7 +100,7 @@ export TOKENIZERS_PARALLELISM=false
 export UV_CACHE_DIR="${{TMPDIR:-${{SLURM_TMPDIR:-/tmp}}}}/uv-cache-${{SLURM_JOB_ID:-$$}}"
 mkdir -p "$UV_CACHE_DIR"
 echo "Using UV cache: $UV_CACHE_DIR"
-uv run python llm_crossover.py '{constants.SLURM_MIXT_INPUT_X}' '{constants.SLURM_MIXT_INPUT_Y}' '{constants.SLURM_MIXT_OUTPUT}'  --top_p {constants.SLURM_MIXT_TOP_P}   --temperature {constants.SLURM_MIXT_TEMPERATURE} --apply_quality_control '{constants.SLURM_MIXT_APPLY_QUALITY_CONTROL}' --bit {constants.SLURM_MIXT_BIT}
+uv run python llm_crossover.py '{mixt_input_x}' '{mixt_input_y}' '{mixt_output}'  --top_p {constants.SLURM_MIXT_TOP_P}   --temperature {constants.SLURM_MIXT_TEMPERATURE} --apply_quality_control '{constants.SLURM_MIXT_APPLY_QUALITY_CONTROL}' --bit {constants.SLURM_MIXT_BIT}
 """
     replace_script_configuration("src/mixt.sh", mixt_sh)
 
@@ -96,9 +112,7 @@ uv run python llm_crossover.py '{constants.SLURM_MIXT_INPUT_X}' '{constants.SLUR
 echo "Launching Python Evaluation"
 hostname
 
-module load cuda
 module load uv
-export CUDA_VISIBLE_DEVICES=0
 unset VIRTUAL_ENV
 export UV_CACHE_DIR="${{TMPDIR:-${{SLURM_TMPDIR:-/tmp}}}}/uv-cache-${{SLURM_JOB_ID:-$$}}"
 mkdir -p "$UV_CACHE_DIR"
@@ -170,8 +184,8 @@ echo "Wrote hostname to $HOSTNAME_FILE"
 # Log the island controller setting for debugging
 echo "SUBMIT_ISLAND_CONTROLLER=${{SUBMIT_ISLAND_CONTROLLER:-<not set>}}"
 
-# Default behavior: START island controller unless explicitly disabled
-if [ "${{SUBMIT_ISLAND_CONTROLLER:-1}}" = "1" ]; then
+# Default behavior: do not start an island controller during a service-only launch.
+if [ "${{SUBMIT_ISLAND_CONTROLLER:-0}}" = "1" ]; then
     # Submit the paired island-controller job from here so the two stay in sync.
     echo "Submitting island controller (count=$COUNT)"
     sbatch island_controller.sbatch "$COUNT" "$SLURM_JOB_ID"
@@ -184,6 +198,23 @@ uv run python -m uvicorn server:app --host $SERVER_HOSTNAME --port {constants.PO
     server_config = sections.get("server-sh", "")
     replace_script_configuration("server.sh", server_config + local_llm_server)
     print(f"Generated server.sh with config:\n{server_config}")
+
+    jailbreak_vllm = sections.get("jailbreak-vllm", "") + """
+echo "launching jailbreak target and judge vLLM services"
+hostname
+module load cuda
+nvidia-smi -L
+
+: "${JB_VLLM_API_KEY:?JB_VLLM_API_KEY must be set}"
+export JB_VLLM_BIN="${JB_VLLM_BIN:-${HOME}/scratch/llmge-vllm/bin/vllm}"
+export JB_JUDGE_MODE="${JB_JUDGE_MODE:-llm}"
+export JB_TARGET_SERVED_NAME="${JB_TARGET_SERVED_NAME:-target}"
+export JB_JUDGE_SERVED_NAME="${JB_JUDGE_SERVED_NAME:-judge}"
+
+bash sota/Jailbreak/serve_vllm.sh
+"""
+    replace_script_configuration("jailbreak_vllm.sbatch", jailbreak_vllm)
+    print("Generated jailbreak_vllm.sbatch")
 
     # Generate unified island_controller.sbatch
     island_controller = sections.get("island-controller", sections.get("islands", "")) + f"""
@@ -203,8 +234,8 @@ module load cuda
 # LLM_Storage
 export HF_HOME=/storage/ice-shared/vip-vvk/llm_storage/
 
-# Change to the repository root
-cd {constants.ROOT_DIR}
+# Return to the repository root supplied by Slurm.
+cd "$SLURM_SUBMIT_DIR"
 
 uv run python islands_wrapper.py {constants.ISLAND_CONTROLLER_RUN_NAME} \\
     --num_islands {constants.ISLAND_CONTROLLER_NUM_ISLANDS} \\
@@ -229,5 +260,5 @@ fi
     print(f"Generated island_controller.sbatch")
 
     # Save templates to YAML for runtime use
-    save_to_yaml(llm_script, python_script, llm_gpu, islands_script)
+    save_to_yaml(llm_script, python_script, llm_gpu, islands_script, jailbreak_vllm)
     print(f"Saved configuration to {constants.SLURM_CONFIG_DIR}/slurm_config.yaml")

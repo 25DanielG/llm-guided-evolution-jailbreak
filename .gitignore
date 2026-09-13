@@ -5,6 +5,13 @@ sota/ExquisiteNetV2/cifar-10-batches-py
 *.bmp
 build/
 tests/*/outputs
+sota/Jailbreak/behaviors/*.csv
+!sota/Jailbreak/behaviors/curated.csv
+sota/Jailbreak/results/
+sota/Jailbreak/*_host.log
+sota/Jailbreak/*_vllm.out
+sota/Jailbreak/.vllm_pids
+.run_state/
 sota/Pointnet_Pointnet2_pytorch/models/llmge-models/
 sota/Pointnet_Pointnet2_pytorch/results/
 0/

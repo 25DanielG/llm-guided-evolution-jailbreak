@@ -1,0 +1,9 @@
+{
+  "name": "AdvBench pilot",
+  "source_url": "https://raw.githubusercontent.com/llm-attacks/llm-attacks/main/data/advbench/harmful_behaviors.csv",
+  "source_sha256": "6cd1a5c63c07610d7eb67307772ee5606017ee950b5770ab288a2c487489d3e1",
+  "sample_size": 30,
+  "sample_seed": 0,
+  "output": "sota/Jailbreak/behaviors/advbench_30.csv",
+  "note": "Review and approve the benchmark under the lab's red-team research policy before use."
+}

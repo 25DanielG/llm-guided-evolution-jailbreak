@@ -3,7 +3,7 @@
 #SBATCH -t 8:00:00
 #SBATCH --nodes=1
 #SBATCH -G 2
-#SBATCH -C "H200"
+#SBATCH -C "H200|H100"
 #SBATCH --mem 160G
 #SBATCH -c 16
 #SBATCH --output=run_job_outputs/server/slurm-%j.out
@@ -17,8 +17,11 @@ hostname
 module load cuda
 module load uv
 
-# Make sure CUDA can see all GPUs
-export CUDA_VISIBLE_DEVICES=0,1
+# Respect the GPU visibility selected by Slurm. Hard-coding 0,1 can make
+# PyTorch probe devices outside the allocation on some cluster GPU nodes.
+echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-<unset>}"
+export USE_TF=0
+export USE_TORCH=1
 export UV_CACHE_DIR="${TMPDIR:-${SLURM_TMPDIR:-/tmp}}/uv-cache-${SLURM_JOB_ID:-$$}"
 mkdir -p "$UV_CACHE_DIR"
 echo "Using UV cache: $UV_CACHE_DIR"
@@ -34,8 +37,8 @@ echo "Wrote hostname to $HOSTNAME_FILE"
 # Log the island controller setting for debugging
 echo "SUBMIT_ISLAND_CONTROLLER=${SUBMIT_ISLAND_CONTROLLER:-<not set>}"
 
-# Default behavior: START island controller unless explicitly disabled
-if [ "${SUBMIT_ISLAND_CONTROLLER:-1}" = "1" ]; then
+# Default behavior: do not start an island controller during a service-only launch.
+if [ "${SUBMIT_ISLAND_CONTROLLER:-0}" = "1" ]; then
     # Submit the paired island-controller job from here so the two stay in sync.
     echo "Submitting island controller (count=$COUNT)"
     sbatch island_controller.sbatch "$COUNT" "$SLURM_JOB_ID"

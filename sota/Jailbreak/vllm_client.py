@@ -1,13 +1,17 @@
-"""Client for the vLLM servers. vLLM is self-hosted, no API key needed. Plain requests
-with a thread pool.
-"""
+"""Small OpenAI-compatible client for the self-hosted vLLM services."""
 
 import time
 from concurrent.futures import ThreadPoolExecutor
 
 import requests
 
-API_KEY = "EMPTY"
+import jb_config
+
+def _headers():
+    return {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {jb_config.api_key()}",
+    }
 
 def wait_ready(base_url, timeout=1200, check_interval=10):
     """Block until the server answers GET /models, or timeout."""
@@ -16,7 +20,7 @@ def wait_ready(base_url, timeout=1200, check_interval=10):
     last_err = None
     while time.time() - start <= timeout:
         try:
-            resp = requests.get(models_url, headers={"Authorization": f"Bearer {API_KEY}"}, timeout=5)
+            resp = requests.get(models_url, headers=_headers(), timeout=5)
             if resp.status_code == 200:
                 return True
         except requests.exceptions.RequestException as err:
@@ -39,7 +43,7 @@ def chat(base_url, model, messages, max_tokens=512, temperature=0.0, timeout=120
         "max_tokens": max_tokens,
         "temperature": temperature,
     }
-    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {API_KEY}"}
+    headers = _headers()
     last_err = None
     for attempt in range(retries + 1):
         try:

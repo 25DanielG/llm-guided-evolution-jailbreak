@@ -39,18 +39,18 @@ def target_model_name():
     return os.getenv("JB_TARGET_SERVED_NAME", "target")
 
 def judge_model_name():
-    return os.getenv("JB_JUDGE_SERVED_NAME", "guard")
+    return os.getenv("JB_JUDGE_SERVED_NAME", "judge")
 
 def judge_mode():
     # guard: Llama-Guard classifier
     # llm: open instruct model + safety rubric.
-    return os.getenv("JB_JUDGE_MODE", "guard").lower()
+    return os.getenv("JB_JUDGE_MODE", "llm").lower()
 
 def behaviors_path():
     return os.getenv("JB_BEHAVIORS_PATH", os.path.join(HERE, "behaviors", "curated.csv"))
 
 def n_behaviors_per_eval():
-    return int(os.getenv("JB_N_BEHAVIORS_PER_EVAL", "8"))
+    return int(os.getenv("JB_N_BEHAVIORS_PER_EVAL", "4"))
 
 def behavior_seed():
     return int(os.getenv("JB_BEHAVIOR_SEED", "0"))
@@ -60,6 +60,9 @@ def use_full_behaviors():
 
 def cache_dir():
     return os.getenv("JB_CACHE_DIR", os.path.join(os.path.expanduser("~"), "scratch", "jb_cache"))
+
+def results_dir():
+    return os.getenv("JB_RESULTS_DIR", os.path.join(HERE, "results"))
 
 def target_max_new_tokens():
     return int(os.getenv("JB_TARGET_MAX_NEW_TOKENS", "512"))
@@ -71,7 +74,19 @@ def request_timeout():
     return float(os.getenv("JB_REQUEST_TIMEOUT", "120"))
 
 def max_concurrency():
-    return int(os.getenv("JB_MAX_CONCURRENCY", "16"))
+    return int(os.getenv("JB_MAX_CONCURRENCY", "2"))
+
+def api_key():
+    value = os.getenv("JB_VLLM_API_KEY", "").strip()
+    if not value:
+        raise RuntimeError("JB_VLLM_API_KEY must be set")
+    return value
+
+def judge_rubric_version():
+    return os.getenv("JB_JUDGE_RUBRIC_VERSION", "2026-09-13-v1")
+
+def judge_parse_retries():
+    return int(os.getenv("JB_JUDGE_PARSE_RETRIES", "2"))
 
 def server_ready_timeout():
     return float(os.getenv("JB_SERVER_READY_TIMEOUT", "1200"))
