@@ -41,6 +41,11 @@ def target_model_name():
 def judge_model_name():
     return os.getenv("JB_JUDGE_SERVED_NAME", "guard")
 
+def judge_mode():
+    # guard: Llama-Guard classifier
+    # llm: open instruct model + safety rubric.
+    return os.getenv("JB_JUDGE_MODE", "guard").lower()
+
 def behaviors_path():
     return os.getenv("JB_BEHAVIORS_PATH", os.path.join(HERE, "behaviors", "curated.csv"))
 

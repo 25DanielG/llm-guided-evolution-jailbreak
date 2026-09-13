@@ -23,7 +23,10 @@ SEED_NETWORK = os.getenv(
 MODEL = "prompt"
 
 # mutator LLM used by server.py for mutation/crossover
-MODEL_PATH = "/storage/ice-shared/vip-vvk/llm_storage/meta-llama/Llama-3.3-70B-Instruct/"
+MODEL_PATH = os.getenv(
+    "JB_MUTATOR_MODEL_PATH",
+    "/storage/ice-shared/vip-vvk/llm_storage/meta-llama/Llama-3.3-70B-Instruct/",
+)
 VARIANT_DIR = os.path.join(SOTA_ROOT, "models/llmge_models")
 TRAIN_FILE = os.path.join(SOTA_ROOT, "eval.py")
 LLM_MAX_NEW_TOKENS = int(os.getenv("LLM_MAX_NEW_TOKENS", "1648"))

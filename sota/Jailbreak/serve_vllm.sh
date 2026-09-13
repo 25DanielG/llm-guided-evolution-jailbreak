@@ -33,6 +33,8 @@ if [[ "${1:-}" == "--stop" ]]; then
     exit 0
 fi
 
+VLLM_BIN="${JB_VLLM_BIN:-vllm}"
+
 TARGET_MODEL_PATH="${JB_TARGET_MODEL_PATH:-/storage/ice-shared/vip-vvk/llm_storage/meta-llama/Llama-3.1-8B-Instruct/}"
 JUDGE_MODEL_PATH="${JB_JUDGE_MODEL_PATH:-/storage/ice-shared/vip-vvk/llm_storage/meta-llama/Llama-Guard-3-8B/}"
 TARGET_PORT="${JB_TARGET_VLLM_PORT:-8001}"
@@ -60,7 +62,7 @@ HOSTNAME_STR="$(hostname)"
 : > "$PIDFILE"
 
 echo "Starting target vLLM ($TARGET_MODEL_PATH) on port $TARGET_PORT"
-CUDA_VISIBLE_DEVICES="$TARGET_GPU" uv run vllm serve "$TARGET_MODEL_PATH" \
+CUDA_VISIBLE_DEVICES="$TARGET_GPU" "$VLLM_BIN" serve "$TARGET_MODEL_PATH" \
     --served-model-name "$TARGET_NAME" \
     --host 0.0.0.0 --port "$TARGET_PORT" \
     --gpu-memory-utilization "$MEM_UTIL" \
@@ -69,7 +71,7 @@ echo $! >> "$PIDFILE"
 echo "$HOSTNAME_STR:$TARGET_PORT" > "$HERE/target_host.log"
 
 echo "Starting judge vLLM ($JUDGE_MODEL_PATH) on port $JUDGE_PORT"
-CUDA_VISIBLE_DEVICES="$JUDGE_GPU" uv run vllm serve "$JUDGE_MODEL_PATH" \
+CUDA_VISIBLE_DEVICES="$JUDGE_GPU" "$VLLM_BIN" serve "$JUDGE_MODEL_PATH" \
     --served-model-name "$JUDGE_NAME" \
     --host 0.0.0.0 --port "$JUDGE_PORT" \
     --gpu-memory-utilization "$MEM_UTIL" \
