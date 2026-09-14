@@ -148,16 +148,16 @@ PLACEHOLDER_FITNESS = tuple([int(x*9999999999*-1) for x in FITNESS_WEIGHTS])
 NUM_EOT_ELITES = 10
 GENERATION = 0
 PROB_QC = 0.0
-PROB_EOT = 0.25
-num_generations = 3  # small for first validation
-start_population_size = 16
-population_size = 16
+PROB_EOT = 0.0
+num_generations = 9  # migration_gen=0 -> loop uses range(1, num_generations)
+start_population_size = 24
+population_size = 24
 crossover_probability = 0.35
 mutation_probability = 0.8
-num_elites = 4
+num_elites = 6
 hof_size = 100
 max_gen_attempts = 5
-migration_gen = 5
+migration_gen = 0
 """
 Misc. Non-sense
 """

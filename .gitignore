@@ -63,3 +63,4 @@ island_controller.sbatch
 templates/**/mutant*.sh
 src/mixt.sh 
 hostname.log
+notebook.md

@@ -26,8 +26,17 @@ export JB_MUTATOR_MODEL_PATH="$MODELS"
 
 HOST=$(hostname)
 
-# single vLLM on GPU0 (target); judge reuses the same endpoint
-CUDA_VISIBLE_DEVICES=0 vllm serve "$MODELS" \
+IFS=',' read -ra GPU_IDS <<< "$CUDA_VISIBLE_DEVICES"
+if [ "${#GPU_IDS[@]}" -lt 2 ]; then
+    echo "ERROR: expected 2 GPUs from Slurm, got: $CUDA_VISIBLE_DEVICES" >&2
+    exit 1
+fi
+TARGET_DEV="${GPU_IDS[0]}"
+MUTATOR_DEV="${GPU_IDS[1]}"
+echo "Slurm gave GPUs: $CUDA_VISIBLE_DEVICES -> target=$TARGET_DEV mutator=$MUTATOR_DEV"
+
+# single vLLM (target); judge reuses the same endpoint
+CUDA_VISIBLE_DEVICES="$TARGET_DEV" vllm serve "$MODELS" \
     --served-model-name target --host 0.0.0.0 --port 8001 \
     --gpu-memory-utilization 0.9 > sota/Jailbreak/target_vllm.out 2>&1 &
 VLLM_PID=$!
@@ -36,25 +45,36 @@ export JB_TARGET_VLLM_URL="http://$HOST:8001/v1"
 export JB_JUDGE_VLLM_URL="http://$HOST:8001/v1"
 export JB_JUDGE_SERVED_NAME=target
 
-# mutator (HF server) on GPU1
+# mutator (HF server)
 export SERVER_HOSTNAME=$HOST
 echo "$HOST" > hostname.log
-CUDA_VISIBLE_DEVICES=1 uv run python -m uvicorn server:app \
+CUDA_VISIBLE_DEVICES="$MUTATOR_DEV" uv run python -m uvicorn server:app \
     --host "$HOST" --port 8137 > mutator.log 2>&1 &
 MUT_PID=$!
 
 cleanup() { kill "$VLLM_PID" "$MUT_PID" 2>/dev/null || true; }
 trap cleanup EXIT
 
-# wait for both to be ready
+# wait for both to be ready; fail fast if a server process dies instead of
+# spinning on curl for the whole walltime (bit us on a MIG node above).
+wait_or_die() {
+    local url="$1" pid="$2" label="$3"
+    while ! curl -sf "$url" >/dev/null 2>&1; do
+        if ! kill -0 "$pid" 2>/dev/null; then
+            echo "ERROR: $label process ($pid) died before becoming ready. See its log." >&2
+            exit 1
+        fi
+        sleep 5
+    done
+}
 echo "Waiting for vLLM..."
-until curl -sf "http://$HOST:8001/v1/models" >/dev/null 2>&1; do sleep 5; done
+wait_or_die "http://$HOST:8001/v1/models" "$VLLM_PID" "vLLM"
 echo "vLLM ready. Waiting for mutator..."
-until curl -sf "http://$HOST:8137/" >/dev/null 2>&1; do sleep 5; done
+wait_or_die "http://$HOST:8137/" "$MUT_PID" "mutator"
 echo "Mutator ready. Starting evolution."
 
-# the loop
-uv run python run_improved.py --checkpoints jb_ckpt \
+RUN_ID="jb_${SLURM_JOB_ID}"
+uv run python run_improved.py --checkpoints "${RUN_ID}/ckpt" --global_path "${RUN_ID}/global" \
     --llm_model llama3 --prompt_group Jailbreak/traits
 
 echo "=== run complete ==="

@@ -23,6 +23,8 @@ _REFUSAL_PHRASES = [
     r"against my (guidelines|programming|principles)",
     r"i cannot fulfill", r"i can't fulfill", r"i cannot comply", r"i can't comply",
     r"it is not appropriate", r"it's not appropriate", r"i'm not comfortable",
+    r"is not something i (can|will|am able to)", r"i must refuse",
+    r"i'm not going to (help|assist)",
 ]
 _REFUSAL_RE = re.compile("|".join(_REFUSAL_PHRASES), re.IGNORECASE)
 
