@@ -9,6 +9,7 @@ Objectives are:
 """
 
 import argparse
+import ast
 import csv
 import importlib
 import json
@@ -33,6 +34,20 @@ def get_args():
     parser.add_argument('--save_dir', type=str, default="trained", help="unused; kept for CLI parity")
     parser.add_argument('--random_seed', type=int, default=42, help="unused; behavior sampling uses JB_BEHAVIOR_SEED")
     return parser.parse_args()
+
+def check_no_duplicate_traits(module_path):
+    """A mutation that names a function to an existing trait_* name causes
+    silent errors, dropping that trait that was meant to use that slot. Raise an
+    error so the gene is marked invalid.
+    """
+    tree = ast.parse(open(module_path).read())
+    seen = {}
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name.startswith("trait_"):
+            seen[node.name] = seen.get(node.name, 0) + 1
+    dupes = [name for name, count in seen.items() if count > 1]
+    if dupes:
+        raise ValueError(f"duplicate trait function definitions (collide, later wins): {dupes}")
 
 def extract_gene_id(model_arg):
     prefix = "prompt_"
@@ -141,6 +156,9 @@ if __name__ == "__main__":
     gene_id = extract_gene_id(args.model)
     print(f"Evaluating gene: {gene_id} (module: {args.model})", flush=True)
 
+    module_file = os.path.join(variant_dir_abs, f"{args.model}.py")
+    if os.path.exists(module_file):
+        check_no_duplicate_traits(module_file)
     model_module = importlib.import_module(args.model)
     strategy = model_module.PromptStrategy()
 
