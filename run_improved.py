@@ -569,6 +569,86 @@ def cancel_eval_job(gene_id, reason):
         stderr = result.stderr.strip()
         print(f"\t☠ Failed to cancel eval job {job_id} for {gene_id}: {stderr}", flush=True)
 
+_TOKEN_RE = re.compile(r"\w+")
+
+def _rendered_text_for_gene(gene_id):
+    """Concatenate a gene's rendered prompt text from its per-behavior sidecar
+    JSON (written by eval.py). Returns "" if unavailable."""
+    path = os.path.join(SOTA_ROOT, "results", f"{gene_id}_results.json")
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return ""
+    chunks = []
+    for beh in data.get("behaviors", []):
+        for msg in (beh.get("messages") or []):
+            chunks.append(str(msg.get("content", "")))
+    return "\n".join(chunks)
+
+def _tfidf_diversity(docs):
+    """D_i = 1 - mean cosine similarity of doc i to the others, over TF-IDF vectors."""
+    import math
+    from collections import Counter
+    n = len(docs)
+    if n < 2:
+        return [1.0] * n
+    tfs = [Counter(_TOKEN_RE.findall(d.lower())) for d in docs]
+    df = Counter()
+    for tf in tfs:
+        df.update(tf.keys())
+    idf = {t: math.log((1 + n) / (1 + df[t])) + 1.0 for t in df}
+    vecs = []
+    for tf in tfs:
+        v = {t: c * idf[t] for t, c in tf.items()}
+        norm = math.sqrt(sum(w * w for w in v.values())) or 1.0
+        vecs.append({t: w / norm for t, w in v.items()})
+    div = []
+    for i in range(n):
+        sims = []
+        vi = vecs[i]
+        for j in range(n):
+            if i == j:
+                continue
+            vj = vecs[j]
+            small, large = (vi, vj) if len(vi) < len(vj) else (vj, vi)
+            sims.append(sum(w * large.get(t, 0.0) for t, w in small.items()))
+        mean_sim = sum(sims) / len(sims) if sims else 0.0
+        div.append(max(0.0, min(1.0, 1.0 - mean_sim)))
+    return div
+
+def apply_diversity_objective(population):
+    """Fill the diversity fitness dimension across an evaluated group (the
+    per-gene eval subprocess has no view of the population, so it writes a
+    placeholder that we overwrite here). No-op for domains without the objective."""
+    div_idx = globals().get("DIVERSITY_OBJ_INDEX")
+    if div_idx is None:
+        return
+    invalid = {tuple(INVALID_FITNESS_MAX), tuple(PLACEHOLDER_FITNESS)}
+    texts = {}
+    for ind in population:
+        gene_id = ind[0]
+        if not ind.fitness.valid or tuple(ind.fitness.values) in invalid:
+            continue
+        text = _rendered_text_for_gene(gene_id)
+        if text:
+            texts[gene_id] = text
+    if len(texts) < 2:
+        return
+    gene_ids = list(texts)
+    scores = dict(zip(gene_ids, _tfidf_diversity([texts[g] for g in gene_ids])))
+    for ind in population:
+        gene_id = ind[0]
+        if gene_id not in scores:
+            continue
+        vals = list(ind.fitness.values)
+        vals[div_idx] = scores[gene_id]
+        ind.fitness.values = tuple(vals)
+        gd = GLOBAL_DATA.get(gene_id)
+        if gd and isinstance(gd.get("fitness"), (list, tuple)):
+            f = list(gd["fitness"]); f[div_idx] = scores[gene_id]; gd["fitness"] = tuple(f)
+    box_print(f"Applied diversity objective to {len(scores)} genes", print_bbox_len=60, new_line_end=False)
+
 def check_and_update_fitness(population, timeout=EVAL_NO_PROGRESS_TIMEOUT_SECONDS, loop_delay=60):
     """ This function submits jobs and then if submitted it checks for four possibilities.
     
@@ -634,6 +714,7 @@ def check_and_update_fitness(population, timeout=EVAL_NO_PROGRESS_TIMEOUT_SECOND
                         all_done = False  # Some jobs are still running
         if all_done:
             box_print("Evalutated All Genes", print_bbox_len=60)
+            apply_diversity_objective(population)
             break  # All jobs are done or timed out
             
         print('Delayed...', flush=True)
@@ -801,12 +882,13 @@ def customCrossover(ind1, ind2, llm_model):
             GLOBAL_DATA[new_gene_id]['status'] = 'DELAYED_CHECK'
             return new_gene_id, None
         
+        job_done = False # defined before the branch
         if successful_sub_flag:
             print(f'\t‣ Checking for Crossover Job Completion: {job_id} for {new_gene_id}')
             job_done = check4job_completion(job_id, local_output, extension="evolution/")
             if job_done:
                 print(f'\t‣ Model Files for {new_gene_id} are Loaded')
-            else: 
+            else:
                 print(f'\t‣ Error Loading Model Files for {new_gene_id}!!')
 
         failed_process = True if (successful_sub_flag is False) or (job_done is False) else False
@@ -885,14 +967,15 @@ def customMutation(individual, llm_model, indpb, temp_min=0.02, temp_max=0.35):
         individual = creator.Individual([new_gene_id])
         return individual
     
+    job_done = False
     if successful_sub_flag:
         print(f'\t‣ Checking for Mutation Job Completion: {job_id} for {new_gene_id}')
         job_done = check4job_completion(job_id, local_output, extension="evolution/")
         if job_done:
             print(f'\t‣ Model Files for {new_gene_id} are Loaded')
-        else: 
+        else:
             print(f'\t☠ Error Loading Model Files for {new_gene_id}')
-    
+
     failed_process = not (successful_sub_flag and job_done)
 
     individual = update_individual(individual, new_gene_id, old_gene_id,
@@ -1037,6 +1120,10 @@ GLOBAL_DATA_ANCESTRY[MODEL] = {'GENES':[MODEL], 'MUTATE_TYPE':["CREATED"]}
 
 # Main Evolution Loop
 if __name__ == "__main__":
+    assert OUTPUT_DIR == "jailbreak_test" and SEED_NETWORK.endswith("Jailbreak/prompt.py"), (
+        f"Wrong domain config loaded (OUTPUT_DIR={OUTPUT_DIR!r}, SEED_NETWORK={SEED_NETWORK!r}). "
+        "Repoint src/cfg/constants.py -> constants_jailbreak.py."
+    )
     # make output directory
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -1081,11 +1168,14 @@ if __name__ == "__main__":
     # Evaluate the entire population
     for ind in population:
         ind.fitness.values = PLACEHOLDER_FITNESS
-        
+
+    os.environ["JB_NUM_GENS"] = str(num_generations)
+    os.environ.setdefault("JB_GEN", str(start_gen))
     check_and_update_fitness(population)
     # Evolution
     for gen in range(start_gen, num_generations if migration_gen == 0 else ((start_gen + migration_gen - 1) // migration_gen) * migration_gen + 1):
         GEN_COUNT = gen
+        os.environ["JB_GEN"] = str(gen)
         TOP_N_GENES = tools.selSPEA2(population, NUM_EOT_ELITES)
         box_print(f"STARTING GENERATION: {gen}", new_line_end=False)
         print_population(population, GLOBAL_DATA)

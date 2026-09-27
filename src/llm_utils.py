@@ -36,8 +36,8 @@ def clean_code_from_llm(code_from_llm):
     except (IndexError, AttributeError) as e:
         # Print an error message if the code extraction fails
         print("Runtime Error: No code was generated or the format is incorrect.")
-        return "ERROR"  # Return ERROR
-        #return ""
+        # Return None for fallback
+        return None
 
 def get_llm_code_generator(llm_model):
     # Prefer the local uvicorn-hosted model when configured

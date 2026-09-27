@@ -58,6 +58,9 @@ def behavior_seed():
 def use_full_behaviors():
     return os.getenv("JB_FULL_BEHAVIORS", "0").lower() in ("1", "true", "yes")
 
+def use_curriculum():
+    return os.getenv("JB_CURRICULUM", "0").lower() in ("1", "true", "yes")
+
 def cache_dir():
     return os.getenv("JB_CACHE_DIR", os.path.join(os.path.expanduser("~"), "scratch", "jb_cache"))
 

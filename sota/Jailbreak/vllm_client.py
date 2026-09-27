@@ -27,10 +27,12 @@ def wait_ready(base_url, timeout=1200, check_interval=10):
     print(f"  vLLM not ready at {base_url} after {int(timeout)}s (last: {last_err})", flush=True)
     return False
 
-def chat(base_url, model, messages, max_tokens=512, temperature=0.0, timeout=120, retries=2):
+def chat(base_url, model, messages, max_tokens=512, temperature=0.0, top_p=None, timeout=120, retries=2):
     """One chat completion. Returns {"text", "prompt_tokens"}.
     Raises RuntimeError if the server is unreachable after retries (infra failure,
-    distinct from the model producing a refusal).
+    distinct from the model producing a refusal). top_p is omitted from the
+    payload when None (server default), so per-individual decoding (trait_decoding)
+    is opt-in without changing existing callers.
     """
     url = f"{base_url}/chat/completions"
     payload = {
@@ -39,6 +41,8 @@ def chat(base_url, model, messages, max_tokens=512, temperature=0.0, timeout=120
         "max_tokens": max_tokens,
         "temperature": temperature,
     }
+    if top_p is not None:
+        payload["top_p"] = top_p
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {API_KEY}"}
     last_err = None
     for attempt in range(retries + 1):
@@ -57,14 +61,18 @@ def chat(base_url, model, messages, max_tokens=512, temperature=0.0, timeout=120
     raise RuntimeError(f"vLLM request to {url} failed after {retries + 1} tries: {last_err}")
 
 def chat_batch(base_url, model, messages_list, max_tokens=512, temperature=0.0,
-               timeout=120, max_concurrency=16):
+               top_p=None, timeout=120, max_concurrency=16):
     """Run many chat completions concurrently, preserving input order."""
     results = [None] * len(messages_list)
 
     def _one(idx_messages):
         idx, messages = idx_messages
-        return idx, chat(base_url, model, messages, max_tokens=max_tokens,
-                         temperature=temperature, timeout=timeout)
+        try:
+            return idx, chat(base_url, model, messages, max_tokens=max_tokens,
+                             temperature=temperature, top_p=top_p, timeout=timeout)
+        except RuntimeError as err:
+            print(f"  chat failed for one item, scoring empty: {err}", flush=True)
+            return idx, {"text": "", "prompt_tokens": 0}
 
     with ThreadPoolExecutor(max_workers=max(1, max_concurrency)) as pool:
         for idx, result in pool.map(_one, list(enumerate(messages_list))):

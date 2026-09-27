@@ -12,10 +12,9 @@ SLURM_CONFIG_DIR = os.getenv(
     os.path.join(ROOT_DIR, "slurm-config"),
 )
 CLUSTER = os.getenv("LLMGE_CLUSTER", "pace-ice")
-DATA_PATH = os.path.join(ROOT_DIR, "sota/Jailbreak/behaviors")
 SOTA_ROOT = os.getenv("LLMGE_SOTA_ROOT", sota_root)
 
-# individual is a trait-segmented prompt-builder module (prompt.py)
+# individual is a trait-segmented prompt-builder module
 SEED_NETWORK = os.getenv(
     "LLMGE_SEED_NETWORK",
     os.path.join(SOTA_ROOT, "prompt.py"),
@@ -37,6 +36,7 @@ SLURM_OUTPUT_PATH = "run_job_outputs/"
 DEFAULT_PROMPT_GROUP = "Jailbreak/traits"
 PROMPTS = f"templates/{DEFAULT_PROMPT_GROUP}/**/*.txt"
 CONSTANT_RULES_PATH = "templates/Jailbreak/ConstantRules.txt"
+CROSSOVER_TEMPLATE_DIR = "templates/Jailbreak/CrossOver"
 
 OUTPUT_DIR = "jailbreak_test"
 PORT = int(os.getenv("LLMGE_PORT", "8137"))
@@ -78,26 +78,6 @@ ISLAND_CONTROLLER_NUM_ISLANDS = 2
 ISLAND_CONTROLLER_LLMS = "llama3"
 ISLAND_CONTROLLER_PROMPT_GROUPS = "Jailbreak/traits"
 
-# Jailbreak target + judge. target should be weaker, judge should be more capable
-TARGET_MODEL_PATH = os.getenv(
-    "JB_TARGET_MODEL_PATH",
-    os.path.join(os.path.expanduser("~"), "scratch/llm_storage/Mistral-7B-Instruct-v0.2"),
-)
-TARGET_SERVED_NAME = os.getenv("JB_TARGET_SERVED_NAME", "target")
-TARGET_VLLM_PORT = int(os.getenv("JB_TARGET_VLLM_PORT", "8001"))
-
-JUDGE_MODEL_PATH = os.getenv(
-    "JB_JUDGE_MODEL_PATH",
-    os.path.join(os.path.expanduser("~"), "scratch/llm_storage/Llama-3.1-8B-Instruct"),
-)
-JUDGE_SERVED_NAME = os.getenv("JB_JUDGE_SERVED_NAME", "judge")
-JUDGE_VLLM_PORT = int(os.getenv("JB_JUDGE_VLLM_PORT", "8002"))
-
-BEHAVIORS_PATH = os.getenv("JB_BEHAVIORS_PATH", os.path.join(SOTA_ROOT, "behaviors/curated.csv"))
-N_BEHAVIORS_PER_EVAL = int(os.getenv("JB_N_BEHAVIORS_PER_EVAL", "8"))
-BEHAVIOR_SEED = int(os.getenv("JB_BEHAVIOR_SEED", "0"))
-
-JB_CACHE_DIR = os.getenv("JB_CACHE_DIR", os.path.join(os.path.expanduser("~"), "scratch", "jb_cache"))
 
 # Load slurm templates from slurm_config.yaml
 _slurm_config_path = os.path.join(SLURM_CONFIG_DIR, 'slurm_config.yaml')
@@ -125,7 +105,7 @@ else:
     DELAYED_CHECK = os.getenv("DELAYED_CHECK", "true").lower() in ("true", "1", "yes")
 MACOS = platform.system() == "Darwin"
 RUNLINE_AMP = ''
-if torch.mps.is_available():
+if hasattr(torch, "mps") and torch.mps.is_available():
     DEVICE = 'mps'
     MACOS = True
     RUNLINE_AMP = "-amp"
@@ -141,15 +121,17 @@ EVAL_NO_PROGRESS_TIMEOUT_SECONDS = int(os.getenv("LLMGE_EVAL_NO_PROGRESS_TIMEOUT
 """
 Evolution Constants/Params
 """
-# obj1 = harm_success_rate to maximize, obj2 = avg prompt tokens / cost to minimize
-FITNESS_WEIGHTS = (1.0, -1.0)
+# obj1 = harm_success_rate (maximize), obj2 = prompt diversity (maximize,
+# TF-IDF novelty vs the rest of the generation),
+# obj3 = avg prompt tokens / cost (minimize).
+FITNESS_WEIGHTS = (1.0, 1.0, -1.0)
 INVALID_FITNESS_MAX = tuple([float(x*np.inf*-1) for x in FITNESS_WEIGHTS])
 PLACEHOLDER_FITNESS = tuple([int(x*9999999999*-1) for x in FITNESS_WEIGHTS])
 NUM_EOT_ELITES = 10
 GENERATION = 0
 PROB_QC = 0.0
 PROB_EOT = 0.0
-num_generations = 9  # migration_gen=0 -> loop uses range(1, num_generations)
+num_generations = 17  # migration_gen=0 -> loop uses range(start_gen, num_generations); resuming from gen 8 reaches gen 16
 start_population_size = 24
 population_size = 24
 crossover_probability = 0.15
@@ -158,6 +140,12 @@ num_elites = 6
 hof_size = 100
 max_gen_attempts = 5
 migration_gen = 0
+
+FORBIDDEN_PATTERNS = []
+
+TRAIT_VALIDATION = "jailbreak_tags"
+
+DIVERSITY_OBJ_INDEX = 1
 """
 Misc. Non-sense
 """

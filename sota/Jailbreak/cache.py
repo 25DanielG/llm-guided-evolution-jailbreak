@@ -30,10 +30,12 @@ def _hash(*parts):
         h.update(b"\x00")
     return h.hexdigest()
 
-def response_key(model_name, messages):
+def response_key(model_name, messages, max_tokens=None, temperature=None, top_p=None, model_id=None):
     # messages is a list of {"role","content"} dicts; serialize deterministically.
     flat = "|".join(f"{m.get('role','')}:{m.get('content','')}" for m in messages)
-    return _hash("resp", model_name, flat)
+    if model_id is None:
+        model_id = os.environ.get("JB_TARGET_MODEL_PATH", "")
+    return _hash("resp", model_name, model_id, max_tokens, temperature, top_p, flat)
 
 def verdict_key(judge_model_name, behavior, response):
     return _hash("verdict", judge_model_name, behavior, response)

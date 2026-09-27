@@ -182,43 +182,41 @@ class LLMModel:
                         flush=True,
                     )
                     
-                    prompts = [req["prompt"] for req in batch]
-                    
-                    max_new_tokens = max(req["max_new_tokens"] for req in batch)
-                    
-                    # all temps and top_p are same
-                    temperature = batch[0]["temperature"] 
-                    top_p = batch[0]["top_p"]
-                    
+                    # group by (temperature, top_p)
+                    groups = {}
+                    for req, future in zip(batch, futures):
+                        gkey = (req["temperature"], req["top_p"])
+                        groups.setdefault(gkey, ([], []))
+                        groups[gkey][0].append(req)
+                        groups[gkey][1].append(future)
+
                     start_time = time.time()
-                    
-                    results = await asyncio.to_thread(
-                        self.pipeline,
-                        prompts,
-                        max_new_tokens=max_new_tokens,
-                        temperature=temperature,
-                        top_p=top_p,
-                    )
-                    
-                    response_time = round(time.time() - start_time, 2)
+                    for (temperature, top_p), (greqs, gfutures) in groups.items():
+                        prompts = [r["prompt"] for r in greqs]
+                        max_new_tokens = max(r["max_new_tokens"] for r in greqs)
+                        results = await asyncio.to_thread(
+                            self.pipeline,
+                            prompts,
+                            max_new_tokens=max_new_tokens,
+                            temperature=temperature,
+                            top_p=top_p,
+                        )
+                        response_time = round(time.time() - start_time, 2)
+                        for result, future in zip(results, gfutures):
+                            output_txt = result[0].get("generated_text", str(result))
+                            future.set_result({
+                                "generated_text": output_txt,
+                                "response_time_sec": response_time,
+                                "batch_size": batch_size
+                            })
+                            self.request_queue.task_done()
+
                     print(
-                        f"Finished batch {batch_id} in {response_time}s "
+                        f"Finished batch {batch_id} ({len(groups)} param-groups) in "
+                        f"{round(time.time() - start_time, 2)}s "
                         f"(queued after finish: {self.request_queue.qsize()})",
                         flush=True,
                     )
-                    
-                    # for every future, set its result
-                    for result, future in zip(results, futures):
-                        output_txt = result[0].get("generated_text", str(result))
-                        
-                        future.set_result({
-                            "generated_text": output_txt,
-                            "response_time_sec": response_time,
-                            "batch_size": batch_size
-                        })
-                        
-                        # done with task
-                        self.request_queue.task_done()
                 
                 except Exception as e:
                     print(f"Error processing batch: {str(e)}", flush=True)

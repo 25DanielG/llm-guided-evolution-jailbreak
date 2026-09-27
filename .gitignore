@@ -44,9 +44,11 @@ sota/ExquisiteNetV2/cifar-10-python
 *.ckpt
 *.bin
 *.safetensors
-*.pklanalysis/scripts/test.py
+*.pkl
+analysis/scripts/test.py
 analysis/test_data/slurm/pkl/
 run_metrics/
+.scratch/
 # Ignore top-level files in analysis/ except PIPELINE.md, README.md, and *.py
 analysis/*
 !analysis/PIPELINE.md

@@ -107,7 +107,8 @@ echo "Judge ready. Waiting for mutator..."
 wait_or_die "http://$HOST:8137/" "$MUT_PID" "mutator"
 echo "Mutator ready. Starting evolution."
 
-RUN_ID="jb_${SLURM_JOB_ID}"
+# run's checkpoint/global dirs
+RUN_ID="${RUN_ID:-jb_${SLURM_JOB_ID}}"
 uv run python run_improved.py --checkpoints "${RUN_ID}/ckpt" --global_path "${RUN_ID}/global" \
     --llm_model llama3 --prompt_group Jailbreak/traits
 
