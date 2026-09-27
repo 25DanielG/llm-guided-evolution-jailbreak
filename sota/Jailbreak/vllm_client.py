@@ -27,7 +27,15 @@ def wait_ready(base_url, timeout=1200, check_interval=10):
     print(f"  vLLM not ready at {base_url} after {int(timeout)}s (last: {last_err})", flush=True)
     return False
 
-def chat(base_url, model, messages, max_tokens=512, temperature=0.0, top_p=None, timeout=120, retries=2):
+def assert_model(base_url, model):
+    """Require the named model on the expected endpoint before any evaluation."""
+    response = requests.get(f"{base_url}/models", headers={"Authorization": f"Bearer {API_KEY}"}, timeout=10)
+    response.raise_for_status()
+    served = {item["id"] for item in response.json().get("data", [])}
+    if model not in served:
+        raise RuntimeError(f"{base_url} serves {sorted(served)}, expected {model}")
+
+def chat(base_url, model, messages, max_tokens=512, temperature=0.0, top_p=None, timeout=120, retries=2, logprobs=False):
     """One chat completion. Returns {"text", "prompt_tokens"}.
     Raises RuntimeError if the server is unreachable after retries (infra failure,
     distinct from the model producing a refusal). top_p is omitted from the
@@ -43,16 +51,22 @@ def chat(base_url, model, messages, max_tokens=512, temperature=0.0, top_p=None,
     }
     if top_p is not None:
         payload["top_p"] = top_p
+    if logprobs:
+        payload.update(logprobs=True, top_logprobs=5)
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {API_KEY}"}
     last_err = None
     for attempt in range(retries + 1):
         try:
+            started = time.monotonic()
             resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
             if resp.status_code == 200:
                 data = resp.json()
-                text = data["choices"][0]["message"]["content"] or ""
+                choice = data["choices"][0]
+                text = choice["message"]["content"] or ""
                 usage = data.get("usage", {}) or {}
-                return {"text": text, "prompt_tokens": int(usage.get("prompt_tokens", 0))}
+                return {"text": text, "prompt_tokens": int(usage.get("prompt_tokens", 0)),
+                        "usage": usage, "latency_seconds": time.monotonic() - started,
+                        "logprobs": choice.get("logprobs")}
             last_err = f"HTTP {resp.status_code}: {resp.text[:200]}"
         except requests.exceptions.RequestException as err:
             last_err = str(err)
@@ -78,3 +92,15 @@ def chat_batch(base_url, model, messages_list, max_tokens=512, temperature=0.0,
         for idx, result in pool.map(_one, list(enumerate(messages_list))):
             results[idx] = result
     return results
+
+def completion(base_url, model, prompt, max_tokens=8, timeout=120):
+    """Raw completion for classifiers with their own instruction template."""
+    started = time.monotonic()
+    response = requests.post(f"{base_url}/completions",
+                             headers={"Authorization": f"Bearer {API_KEY}"},
+                             json={"model": model, "prompt": prompt, "max_tokens": max_tokens,
+                                   "temperature": 0}, timeout=timeout)
+    response.raise_for_status()
+    data = response.json()
+    return {"text": data["choices"][0]["text"], "usage": data.get("usage", {}),
+            "latency_seconds": time.monotonic() - started}

@@ -6,6 +6,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 TARGET_HOST_FILE = os.path.join(HERE, "target_host.log")
 JUDGE_HOST_FILE = os.path.join(HERE, "judge_host.log")
+REPORTING_HOST_FILE = os.path.join(HERE, "reporting_host.log")
 
 def _read_host_file(path):
     try:
@@ -35,16 +36,23 @@ def target_base_url():
 def judge_base_url():
     return _resolve_base_url("JB_JUDGE_VLLM_URL", "JB_JUDGE_VLLM_PORT", 8002, JUDGE_HOST_FILE)
 
+def reporting_base_url():
+    return _resolve_base_url("JB_REPORTING_VLLM_URL", "JB_REPORTING_VLLM_PORT", 8003, REPORTING_HOST_FILE)
+
 def target_model_name():
     return os.getenv("JB_TARGET_SERVED_NAME", "target")
 
 def judge_model_name():
-    return os.getenv("JB_JUDGE_SERVED_NAME", "guard")
+    return os.getenv("JB_JUDGE_SERVED_NAME", "meta-llama/Llama-3.3-70B-Instruct")
 
-def judge_mode():
-    # guard: Llama-Guard classifier
-    # llm: open instruct model + safety rubric.
-    return os.getenv("JB_JUDGE_MODE", "guard").lower()
+def reporting_model_name():
+    return os.getenv("JB_REPORTING_SERVED_NAME", "cais/HarmBench-Llama-2-13b-cls")
+
+def verification_threshold():
+    return float(os.getenv("JB_VERIFY_THRESHOLD", "0.5"))
+
+def audit_sample_size():
+    return int(os.getenv("JB_AUDIT_SAMPLE_SIZE", "3"))
 
 def behaviors_path():
     return os.getenv("JB_BEHAVIORS_PATH", os.path.join(HERE, "behaviors", "curated.csv"))

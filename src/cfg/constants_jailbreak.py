@@ -78,6 +78,31 @@ ISLAND_CONTROLLER_NUM_ISLANDS = 2
 ISLAND_CONTROLLER_LLMS = "llama3"
 ISLAND_CONTROLLER_PROMPT_GROUPS = "Jailbreak/traits"
 
+# Jailbreak target + judge + reporting (defaults; actual run overrides via env,
+# see run_jailbreak.sbatch -- these constants are unused directly by jb_config.py,
+# kept for documentation/consistency)
+TARGET_MODEL_PATH = os.getenv(
+    "JB_TARGET_MODEL_PATH",
+    os.path.join(os.path.expanduser("~"), "scratch/llm_storage/Llama-3.1-8B-Instruct"),
+)
+TARGET_SERVED_NAME = os.getenv("JB_TARGET_SERVED_NAME", "target")
+TARGET_VLLM_PORT = int(os.getenv("JB_TARGET_VLLM_PORT", "8001"))
+
+JUDGE_MODEL_PATH = os.getenv(
+    "JB_JUDGE_MODEL_PATH",
+    os.path.join(os.path.expanduser("~"), "scratch/llm_storage/Llama-3.1-8B-Instruct"),
+)
+JUDGE_SERVED_NAME = os.getenv("JB_JUDGE_SERVED_NAME", "judge")
+JUDGE_VLLM_PORT = int(os.getenv("JB_JUDGE_VLLM_PORT", "8002"))
+REPORTING_MODEL_PATH = os.getenv("JB_REPORTING_MODEL_PATH", os.path.join(os.path.expanduser("~"), "scratch/llm_storage/HarmBench-Llama-2-13b-cls"))
+REPORTING_SERVED_NAME = os.getenv("JB_REPORTING_SERVED_NAME", "cais/HarmBench-Llama-2-13b-cls")
+REPORTING_VLLM_PORT = int(os.getenv("JB_REPORTING_VLLM_PORT", "8003"))
+
+BEHAVIORS_PATH = os.getenv("JB_BEHAVIORS_PATH", os.path.join(SOTA_ROOT, "behaviors/curated.csv"))
+N_BEHAVIORS_PER_EVAL = int(os.getenv("JB_N_BEHAVIORS_PER_EVAL", "8"))
+BEHAVIOR_SEED = int(os.getenv("JB_BEHAVIOR_SEED", "0"))
+
+JB_CACHE_DIR = os.getenv("JB_CACHE_DIR", os.path.join(os.path.expanduser("~"), "scratch", "jb_cache"))
 
 # Load slurm templates from slurm_config.yaml
 _slurm_config_path = os.path.join(SLURM_CONFIG_DIR, 'slurm_config.yaml')
@@ -121,9 +146,9 @@ EVAL_NO_PROGRESS_TIMEOUT_SECONDS = int(os.getenv("LLMGE_EVAL_NO_PROGRESS_TIMEOUT
 """
 Evolution Constants/Params
 """
-# obj1 = harm_success_rate (maximize), obj2 = prompt diversity (maximize,
-# TF-IDF novelty vs the rest of the generation),
-# obj3 = avg prompt tokens / cost (minimize).
+# obj1 = mean in-loop judge score (maximize; continuous rubric score, not
+# binary harm), obj2 = prompt diversity (maximize, TF-IDF novelty vs the rest
+# of the generation), obj3 = avg prompt tokens / cost (minimize).
 FITNESS_WEIGHTS = (1.0, 1.0, -1.0)
 INVALID_FITNESS_MAX = tuple([float(x*np.inf*-1) for x in FITNESS_WEIGHTS])
 PLACEHOLDER_FITNESS = tuple([int(x*9999999999*-1) for x in FITNESS_WEIGHTS])

@@ -26,6 +26,8 @@ import glob
 global PROMPT_GLOB
 PROMPT_GLOB = PROMPTS if "PROMPTS" in globals() else "templates/Testing/Normal/**/*.txt"
 DEFAULT_LLM_MODEL = globals().get("LLM_MIXTRAL", globals().get("LLM_MODEL", None))
+RUN_ID = os.getenv("LLMGE_RUN_ID", "manual")
+CURRENT_GENERATION = 0
 AVAILABLE_LLM_MODELS = globals().get("ISLAND_LLMS", [])
 if not AVAILABLE_LLM_MODELS and globals().get("LLM_MODEL"):
     AVAILABLE_LLM_MODELS = [globals()["LLM_MODEL"]]
@@ -437,6 +439,8 @@ def submit_run(gene_id):
     def write_bash_script_py(gene_id, train_file=f'{TRAIN_FILE}'):
         model_file_override = RUNLINE_TMP.format(MODEL, gene_id) 
         python_runline = EVAL_RUNLINE.format(train_file, model_file_override, VARIANT_DIR=VARIANT_DIR)
+        if MODEL == "prompt" and "Jailbreak" in TRAIN_FILE:
+            python_runline += f" --generation {CURRENT_GENERATION} --run-id {RUN_ID}"
         config = load_yaml()
         bash_script_content = fill_template_slots(config['python_bash_script'], python_runline)
         return bash_script_content
@@ -1134,8 +1138,10 @@ if __name__ == "__main__":
     parser.add_argument('--llm_model', type=str, help='Which LLM to use', default=DEFAULT_LLM_MODEL)
     parser.add_argument('--global_path', type=str, help='Path to global variables', default=ROOT_DIR)
     parser.add_argument('--prompt_group', type=str, help='Prompt group or glob (relative to templates/)', default=None)
+    parser.add_argument('--run-id', type=str, default=RUN_ID)
     # Parse the arguments
     args = parser.parse_args()
+    RUN_ID = args.run_id
     llm_model = args.llm_model
 
     PROMPT_GLOB = resolve_prompt_glob(args.prompt_group)
@@ -1174,6 +1180,7 @@ if __name__ == "__main__":
     check_and_update_fitness(population)
     # Evolution
     for gen in range(start_gen, num_generations if migration_gen == 0 else ((start_gen + migration_gen - 1) // migration_gen) * migration_gen + 1):
+        CURRENT_GENERATION = gen
         GEN_COUNT = gen
         os.environ["JB_GEN"] = str(gen)
         TOP_N_GENES = tools.selSPEA2(population, NUM_EOT_ELITES)
@@ -1280,6 +1287,9 @@ if __name__ == "__main__":
 
         GLOBAL_DATA_HIST.update(GLOBAL_DATA.copy())
         check_and_update_fitness(offspring)
+        if MODEL == "prompt" and "Jailbreak" in TRAIN_FILE and gen % 2 == 0:
+            subprocess.run(["uv", "run", "python", os.path.join(SOTA_ROOT, "audit.py"),
+                            "--run-id", RUN_ID, "--generation", str(gen)], check=True)
         GLOBAL_DATA_HIST.update(GLOBAL_DATA.copy())
         # Replace the old population with the offspring
         population[:] = offspring
