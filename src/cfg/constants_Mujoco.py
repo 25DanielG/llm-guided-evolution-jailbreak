@@ -236,3 +236,14 @@ DNA_TXT = """
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⡿⠁⠀⠀⠀⠀⠀⠀⠀
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢙⣃⠀⠀
 """
+
+# The shared evolution imports use this module for every workflow. Select the
+# jailbreak configuration when the dedicated batch job requests it.
+if os.getenv("LLMGE_CONFIG") == "jailbreak":
+    from . import constants_jailbreak as _jailbreak_constants
+
+    globals().update({
+        name: value
+        for name, value in vars(_jailbreak_constants).items()
+        if not name.startswith("_")
+    })
