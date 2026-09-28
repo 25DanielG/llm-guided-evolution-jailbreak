@@ -34,6 +34,26 @@ if not AVAILABLE_LLM_MODELS and globals().get("LLM_MODEL"):
 
 LLM_SERVER_READY = False
 
+
+def record_prompt_population(generation, retained, offspring=None):
+    """Checkpoint-boundary reporting only; never participates in selection."""
+    if MODEL != "prompt" or "Jailbreak" not in TRAIN_FILE:
+        return
+    try:
+        from pathlib import Path
+        from sota.Jailbreak import jb_config, prompt_records
+        cases, fingerprint = prompt_records.load_cases(jb_config.behaviors_path())
+        if not jb_config.use_full_behaviors():
+            cases = random.Random(jb_config.behavior_seed()).sample(cases, min(jb_config.n_behaviors_per_eval(), len(cases)))
+        cohorts = {"retained": [ind[0] for ind in retained]}
+        if offspring is not None:
+            cohorts["offspring"] = offspring
+        prompt_records.save_population_manifest(
+            Path(SOTA_ROOT) / "results" / RUN_ID, RUN_ID, generation, cohorts, cases, fingerprint,
+            prompt_records.target_context(jb_config.target_model_name(), os.getenv("JB_TARGET_MODEL_PATH")))
+    except Exception as err:
+        print(f"WARNING: prompt population manifest unavailable: {err}", flush=True)
+
 def print_ancestry(data):
     for gene in data.keys():
         print(f'gene: {gene}')
@@ -1085,10 +1105,12 @@ if __name__ == "__main__":
         hof = tools.ParetoFront()
 
     # Evaluate the entire population
+    CURRENT_GENERATION = start_gen - 1
     for ind in population:
         ind.fitness.values = PLACEHOLDER_FITNESS
         
     check_and_update_fitness(population)
+    record_prompt_population(CURRENT_GENERATION, population)
     # Evolution
     for gen in range(start_gen, num_generations if migration_gen == 0 else ((start_gen + migration_gen - 1) // migration_gen) * migration_gen + 1):
         CURRENT_GENERATION = gen
@@ -1171,6 +1193,8 @@ if __name__ == "__main__":
         box_print("Batch Checking Mutated Genes", print_bbox_len=60, new_line_end=False)
         offspring = delayed_mutate_check(offspring)
         print_population(offspring, GLOBAL_DATA)
+        # Keep IDs before elites are appended; later manifests reuse evaluated prompts.
+        prompt_offspring_ids = [ind[0] for ind in offspring]
         
         # Add elites back to offspring. Usually before the mute and cross but in this case we save them
         offspring.extend(elites)
@@ -1207,6 +1231,7 @@ if __name__ == "__main__":
         print_scores(population, FITNESS_WEIGHTS)
         hof.update(population)
         save_checkpoint(gen, folder_name=args.checkpoints, global_path=args.global_path)
+        record_prompt_population(gen, population, prompt_offspring_ids)
         LINKED_GENES = {}
         # mutate x prompts
         # mutate_prompts()

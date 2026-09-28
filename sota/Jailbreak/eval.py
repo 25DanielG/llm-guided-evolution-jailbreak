@@ -9,13 +9,13 @@ Objectives are:
 """
 
 import argparse
-import csv
 import importlib
 import json
 import os
 import random
 import sys
 import fcntl
+import uuid
 from pathlib import Path as p
 
 SCRIPT_DIR = p(__file__).parent.resolve()
@@ -24,6 +24,7 @@ import cache
 import jb_config
 import judge
 import vllm_client
+import prompt_records
 
 PENALTY_TOKENS = 1_000_000.0  # obj2 penalty when no attack happened
 
@@ -44,22 +45,8 @@ def extract_gene_id(model_arg):
     return "seed"
 
 def load_behaviors():
-    path = jb_config.behaviors_path()
-    rows = []
-    with open(path, "r", newline="") as f:
-        reader = csv.DictReader(f)
-        cols = reader.fieldnames or []
-        # common column names for the behavior text
-        text_col = next((c for c in ("behavior", "goal", "prompt", "text") if c in cols), None)
-        if text_col is None:
-            raise ValueError(f"No behavior column found in {path}; columns={cols}")
-        for row in reader:
-            behavior = (row.get(text_col) or "").strip()
-            if behavior:
-                rows.append(behavior)
-    if not rows:
-        raise ValueError(f"No behaviors loaded from {path}")
-    return rows
+    cases, _ = prompt_records.load_cases(jb_config.behaviors_path())
+    return [case["behavior"] for case in cases]
 
 def sample_behaviors(behaviors):
     if jb_config.use_full_behaviors():
@@ -68,35 +55,57 @@ def sample_behaviors(behaviors):
     rng = random.Random(jb_config.behavior_seed())
     return rng.sample(behaviors, k)
 
-def get_target_responses(strategy, behaviors, target_url, target_name, use_cache=True):
+def get_target_responses(strategy, behaviors, target_url, target_name, use_cache=True, capture_context=None):
     """Build prompts, query target. Returns list of dicts: {behavior, response, prompt_tokens}.
     A behavior whose prompt build fails is skipped.
     """
     cdir = jb_config.cache_dir()
-    built = [] # (behavior, messages)
-    for behavior in behaviors:
+    built = []
+    observations = []
+    evaluation_id = uuid.uuid4().hex
+    for index, case in enumerate(behaviors):
+        behavior = case["behavior"] if isinstance(case, dict) else case
+        case_id = case["case_id"] if isinstance(case, dict) else "text:" + prompt_records.digest(behavior)
+        metadata = {"case_id": case_id, "behavior_index": index, "evaluation_id": evaluation_id,
+                    "record_id": f"{evaluation_id}:{case_id}"}
+        observation = {**(capture_context or {}), **metadata, "behavior": behavior, "status": "ok"}
         try:
             messages = strategy.build_prompt(behavior)
         except Exception as err: # broken trait on this input, so skip
             print(f"  build_prompt failed for a behavior: {err}", flush=True)
+            observations.append({**observation, "status": "build_failed", "error": str(err)})
             continue
         if isinstance(messages, str):
             messages = [{"role": "user", "content": messages}]
-        built.append((behavior, messages))
+        built.append((behavior, messages, metadata))
+        try:
+            text = prompt_records.serialize_messages(messages)
+            observations.append({**observation, "messages": messages, "prompt_text": text,
+                                 "prompt_hash": prompt_records.digest(text),
+                                 "serialization_version": prompt_records.SERIALIZATION_VERSION})
+        except ValueError as err:
+            observations.append({**observation, "status": "invalid_prompt", "error": str(err)})
+
+    if capture_context is not None:
+        try:
+            prompt_records.append_jsonl(SCRIPT_DIR / "results" / capture_context["run_id"] / "prompt_records.jsonl", observations)
+        except Exception as err:
+            # Observability failures must not alter evaluation/fitness.
+            print(f"WARNING: prompt capture unavailable: {err}", flush=True)
 
     records = []
     to_query = [] # (index_into_records, messages)
-    for behavior, messages in built:
+    for behavior, messages, metadata in built:
         key = cache.response_key(target_name, messages, jb_config.target_max_new_tokens(),
                                  jb_config.target_temperature())
         hit = cache.get(cdir, key) if use_cache else None
         if hit is not None:
             data = json.loads(hit)
-            records.append({"behavior": behavior, "response": data["text"], "prompt_tokens": data["prompt_tokens"],
+            records.append({**metadata, "behavior": behavior, "response": data["text"], "prompt_tokens": data["prompt_tokens"],
                             "usage": data.get("usage", {}), "latency_seconds": data.get("latency_seconds", 0),
                             "messages": messages, "target_cached": True})
         else:
-            records.append({"behavior": behavior, "response": None, "prompt_tokens": None,
+            records.append({**metadata, "behavior": behavior, "response": None, "prompt_tokens": None,
                             "_key": key, "messages": messages, "target_cached": False})
             to_query.append((len(records) - 1, messages))
 
@@ -204,7 +213,8 @@ if __name__ == "__main__":
     model_module = importlib.import_module(args.model)
     strategy = model_module.PromptStrategy()
 
-    behaviors = sample_behaviors(load_behaviors())
+    cases, dataset_fingerprint = prompt_records.load_cases(jb_config.behaviors_path())
+    behaviors = sample_behaviors(cases)
     print(f"Sampled {len(behaviors)} behaviors", flush=True)
 
     target_url = jb_config.target_base_url()
@@ -221,15 +231,24 @@ if __name__ == "__main__":
             raise RuntimeError(f"vLLM server not reachable at {url}")
         vllm_client.assert_model(url, model)
 
-    records = get_target_responses(strategy, behaviors, target_url, jb_config.target_model_name())
+    capture_context = {
+        "schema_version": 1, "run_id": args.run_id, "generation": args.generation, "candidate_id": gene_id,
+        "dataset_fingerprint": dataset_fingerprint, "sampled_case_ids": [case["case_id"] for case in behaviors],
+        "target_context": prompt_records.target_context(jb_config.target_model_name(), os.getenv("JB_TARGET_MODEL_PATH")),
+    }
+    records = get_target_responses(strategy, behaviors, target_url, jb_config.target_model_name(),
+                                   capture_context=capture_context)
     harm_rate, avg_tokens = score(records)
     report_rows = []
-    for index, rec in enumerate(records):
+    for rec in records:
         in_loop = rec["in_loop"]
         verification = verify_record(rec, target_url, jb_config.target_model_name()) if in_loop["score"] >= jb_config.verification_threshold() else None
         report_rows.append({
             "run_id": args.run_id, "generation": args.generation, "candidate_id": gene_id,
-            "behavior_index": index, "behavior": rec["behavior"], "evolved_prompt": rec["messages"],
+            "behavior_index": rec["behavior_index"], "case_id": rec["case_id"],
+            "evaluation_id": rec["evaluation_id"], "prompt_record_id": rec["record_id"],
+            "dataset_fingerprint": dataset_fingerprint, "target_context": capture_context["target_context"],
+            "behavior": rec["behavior"], "evolved_prompt": rec["messages"],
             "target_response": rec["response"], "target_model": jb_config.target_model_name(),
             "judge_model": jb_config.judge_model_name(), "reporting_model": jb_config.reporting_model_name(),
             "target_usage": rec.get("usage", {}), "target_latency_seconds": rec.get("latency_seconds", 0),

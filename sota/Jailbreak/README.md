@@ -47,8 +47,102 @@ the highest-scoring behavior responses for labeling. Logs print mean judge
 score, in-loop success rate at the verification threshold, and verified success
 rate separately. `results/<run_id>/audits.jsonl` stores the periodic score comparisons.
 
+## Prompt diversity
+
+New evaluations append `results/<run_id>/prompt_records.jsonl` before target
+inference. Each observation includes a stable CSV case ID, generation, candidate,
+evaluation attempt, sampled case IDs, dataset fingerprint, target context, and the
+exact messages. Failed builds are recorded. Successful observations include a
+deterministic text representation and SHA-256 hash. An observability write error
+prints a warning and does not change fitness.
+
+The evolution loop writes immutable `manifests/generation_*.json` population
+snapshots after checkpointing, plus an initial generation-0 snapshot. Snapshots
+reference observations for retained strategies and offspring before elites are
+appended. Carried strategies reuse their captured prompts. Resume preserves
+completed snapshots; an unsuccessful reevaluation never falls back to an older
+successful case observation.
+
+Run analysis separately; it makes no target/judge calls and changes no selection
+or fitness values:
+
+```bash
+uv sync --extra diversity
+uv run --extra diversity python analysis/scripts/prompt_diversity.py jb_5956355 \
+    --target-tokenizer "$HOME/scratch/llm_storage/Llama-3.1-8B-Instruct"
+```
+
+Use `--ngram-only` to omit embeddings, `--ngram-size 4` to change n-gram size,
+or `--device cuda:0` on a separately allocated analysis GPU. CPU and batch size 8
+are defaults. `--records-dir`, `--candidates`, and `--output-dir` support alternate
+artifact locations. The target tokenizer must match the checkpoint used for the
+run, rather than the served alias `target`.
+
+On the login node, submit the CPU analysis through Slurm instead:
+
+```bash
+sbatch run_prompt_diversity.sbatch jb_5956355 \
+    "$HOME/scratch/llm_storage/Llama-3.1-8B-Instruct"
+```
+
+The batch script requests four CPUs, 16 GB RAM, and up to four hours, with no GPU.
+It reuses the downloaded checkpoint under `results/analysis/embedding_smoke/`,
+so compute nodes need no network access. Set `JB_DIVERSITY_EMBEDDING_MODEL_PATH`
+to use another local Sentence-BERT checkpoint. Job logs are
+`prompt_diversity_<job_id>.out`; reports use the same analysis output directory.
+
+The default embedding model is `sentence-transformers/all-mpnet-base-v2`.
+Its default revision is `e8c3b32edf5434bc2275fc9bab85f82640a19130`, shared across
+runs. The first analysis downloads its assets into the analysis embedding cache,
+records the immutable Hub revision in `model_lock.json`, and reuses that revision
+on subsequent runs. `--embedding-revision` overrides the pinned revision;
+`--embedding-model` can select a versioned local checkpoint. Local checkpoint
+versions are hashes of all checkpoint assets. No API key or embedding service is
+required. Embedding failures produce unavailable semantic scores and diagnostics,
+while n-gram reports still complete.
+
+Both metrics use complete messages serialized as `[role]\ncontent`, in order,
+with newlines between messages. Target-visible fences remain in content; Python
+source delimiters and generator response wrappers are not measured. N-gram
+tokenization adds no special tokens, never truncates, and defaults to 3-gram set
+Jaccard distance. Prompts shorter than the selected size are unavailable.
+
+SBERT inputs longer than its model limit are split into non-overlapping content
+token chunks, reserving space for model special tokens. All tokens are included.
+Each normalized chunk vector is weighted by its content-token count; their
+weighted mean is normalized to obtain a prompt vector. Semantic distance is
+`1 - cosine`, ranging from 0 to 2. Pooling approximates full-prompt meaning; this
+checkpoint is English-oriented, so multilingual results have that limitation.
+The persistent embedding cache includes model revision and preprocessing settings
+in its keys, and identical prompt texts are computed once.
+
+All unordered strategy pairs are compared **within the same case**. Each case's
+mean pair distance and mean nearest-neighbor distance are computed independently,
+then eligible cases are weighted equally. Distinct strategy IDs with identical
+prompts contribute zero-distance pairs. Each metric needs at least two valid
+strategies in a case; unavailable CSV values are empty fields, and plots show
+gaps. Coverage is valid compared pairs divided by the possible pairs across the
+cohort's distinct strategy IDs and expected cases.
+
+Outputs go to `results/analysis/<run_id>/prompt_diversity/`:
+
+- `generation_diversity.csv`: mean and nearest-neighbor scores, population,
+  valid cases/prompts, compared/possible pairs, and metric-specific coverage.
+- `case_diversity.csv` and `prompt_diagnostics.csv`: auditable comparisons and
+  exclusion reasons, source observation references, token lengths, and chunk counts.
+- `ngram_diversity.png` and `semantic_diversity.png`: generation trends.
+- `metadata.json` and `embedding_cache/`: configuration, package versions,
+  model/tokenizer fingerprints, reconstruction limitations, and cached vectors.
+
+Historical runs use checkpoint populations and existing candidate logs. Case IDs
+are hashes of exact behavior text, and case scope is inferred from recorded cases.
+Conflicting records or missing prompts are unavailable. Historical offspring
+membership cannot be reconstructed, and generation 0 is omitted unless a snapshot
+or checkpoint establishes membership. This loop retains offspring plus elites;
+cohort differences do not establish post-evaluation selection losses.
+
 Run focused tests without the repository's Slurm-backed test fixture:
 
 ```bash
-python -m pytest tests/sota/test_jailbreak_phase1.py --confcutdir=tests/sota -q
+python -m pytest tests/sota/test_jailbreak_phase1.py tests/sota/test_prompt_diversity.py --confcutdir=tests/sota -q
 ```
