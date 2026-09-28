@@ -33,8 +33,6 @@ venv/
 *.pyo
 .DS_Store
 Thumbs.db
-analysis/dashboard/uploads/
-analysis/results/analysis/*
 !analysis/results/analysis/.gitkeep
 sota/ExquisiteNetV2/cifar-10-python
 *.out
@@ -48,11 +46,6 @@ sota/ExquisiteNetV2/cifar-10-python
 analysis/test_data/slurm/pkl/
 run_metrics/
 # Ignore top-level files in analysis/ except PIPELINE.md, README.md, and *.py
-analysis/*
-!analysis/PIPELINE.md
-!analysis/README.md
-!analysis/*.py
-!analysis/*/
 sota/ExquisiteNetV2/cifar-10-python/
 *.code-workspace
 mujoco_rl_output
