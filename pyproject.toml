@@ -40,4 +40,4 @@ dependencies = [
 junit_logging = "system-out"
 
 [project.optional-dependencies]
-diversity = ["sentence-transformers>=3.4,<6"]
+diversity = ["sentence-transformers>=3.4,<6", "umap-learn==0.5.9.post2"]

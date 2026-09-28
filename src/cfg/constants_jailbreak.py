@@ -152,7 +152,7 @@ NUM_EOT_ELITES = 10
 GENERATION = 0
 PROB_QC = 0.0
 PROB_EOT = 0.0
-num_generations = 9  # migration_gen=0 -> loop uses range(1, num_generations)
+num_generations = int(os.getenv("JB_NUM_GENERATIONS", "9"))  # exclusive upper bound
 start_population_size = 24
 population_size = 24
 crossover_probability = 0.35

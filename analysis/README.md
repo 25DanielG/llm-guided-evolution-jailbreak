@@ -26,3 +26,33 @@ prompt diagnostics, model metadata, cached embeddings, and two trend plots to
 raw experiments and makes no target-model calls. See
 [the Jailbreak documentation](../sota/Jailbreak/README.md#prompt-diversity) for
 setup, metric definitions, chunk pooling, and historical-run limitations.
+
+## Semantic projection
+
+After semantic diversity completes, submit the cached-embedding visualization:
+
+```bash
+sbatch run_semantic_projection.sbatch results/analysis/jb_5956355/prompt_diversity
+```
+
+Or run on an allocated compute node:
+
+```bash
+.venv/bin/python analysis/scripts/semantic_projection.py results/analysis/jb_5956355/prompt_diversity
+```
+
+The `diversity` optional dependencies include `umap-learn`. Outputs go into
+`semantic_projection/` beneath that analysis: a PNG/PDF overlay with earlier
+generations faded and the latest opaque, PNG/PDF generation panels, a
+self-contained interactive HTML with case selection and playback, coordinates,
+projection-quality measurements, and provenance metadata. No inference or
+raw-run writes are performed.
+
+One joint densMAP is fit per case across all completed generations, using
+unique vectors so identical prompts have identical coordinates. Colors come
+from HDBSCAN on original cosine distances. Static plots select the case with
+median relative endpoint nearest-neighbor change; `--case-id` overrides it.
+Cases have separate coordinate systems. Generic axes have no semantic units.
+The original cosine-distance trend is the evidence for local tightening;
+2D geometry and exploratory group labels are approximate. See the
+[densMAP method documentation](https://umap-learn.readthedocs.io/en/latest/densmap_demo.html).

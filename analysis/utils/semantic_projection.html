@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Semantic diversity over time</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f3f5f8;color:#1e293b;font:15px system-ui,sans-serif}main{max-width:1300px;margin:30px auto;padding:0 24px}h1{font-size:28px;margin-bottom:8px}.muted{color:#586579;line-height:1.6}.controls{display:flex;gap:20px;align-items:center;flex-wrap:wrap;margin:24px 0}select,button{font:inherit;padding:8px;border:1px solid #bac4d0;border-radius:5px;background:white}button{cursor:pointer}input[type=range]{width:260px}.layout{display:grid;grid-template-columns:2fr 1fr;gap:22px}.card{background:white;border-radius:12px;padding:22px;box-shadow:0 2px 10px #18243808}svg{width:100%;display:block}.legend{display:flex;flex-wrap:wrap;gap:15px;font-size:13px;margin:15px 0}.swatch{display:inline-block;width:11px;height:11px;border-radius:50%;margin-right:5px}.stats{font-size:18px;margin-bottom:12px}#hover{min-height:45px;font:12px ui-monospace,monospace;overflow-wrap:anywhere}.axis{font-size:14px;fill:#586579}.fine{font-size:13px}.metric{font-size:15px;font-weight:600}#trend{margin:18px 0}footer{margin-top:20px}@media(max-width:850px){.layout{grid-template-columns:1fr}main{padding:0 12px}}
+</style>
+<main>
+<h1>Semantic diversity over time</h1>
+<div class="muted" id="subtitle"></div>
+<div class="controls">
+<label>Evaluation case <select id="case"></select></label>
+<label>Generation <input id="generation" type="range" min="0" step="1"><b id="generationLabel"></b></label>
+<button id="play">Play</button>
+<label><input type="checkbox" id="history" checked> Fade earlier generations</label>
+</div>
+<div class="layout">
+<section class="card"><svg id="map" viewBox="0 0 780 620" aria-label="Two-dimensional semantic projection"></svg>
+<div id="legend" class="legend"></div><div class="muted fine">Earlier generations are faded; the displayed generation is opaque. Larger points represent identical prompts from multiple strategies.</div><div id="hover" class="muted"></div></section>
+<section class="card"><div id="stats" class="stats"></div><div id="coverage" class="muted fine"></div><svg id="trend" viewBox="0 0 360 245" aria-label="Nearest-neighbor cosine distance across generations"></svg>
+<div id="quality" class="muted fine"></div><p class="muted fine">Colors identify exploratory HDBSCAN groups in the original embedding space. The fixed map is fit across all completed generations for this case. Coordinates and colors belong to this case alone.</p><p class="muted fine">2D geometry is approximate. The line chart uses original embedding distances, equally weighted across cases. Lower nearest-neighbor distance indicates closer local variants; it does not establish that every group contracts.</p></section>
+</div>
+<footer class="muted fine">Each case has its own shared map to prevent topic differences from inflating strategy diversity. No model calls or external assets are used by this page.</footer>
+</main>
+<script id="data" type="application/json">__PROJECTION_DATA__</script>
+<script>
+const data=JSON.parse(document.getElementById('data').textContent),ns='http://www.w3.org/2000/svg';
+const el=id=>document.getElementById(id), generations=data.summary.map(s=>s.generation);
+let timer=null;
+function node(name,attrs={},text){const n=document.createElementNS(ns,name);for(const [k,v]of Object.entries(attrs))n.setAttribute(k,v);if(text!==undefined)n.textContent=text;return n}
+function color(label){if(label<0)return '#737b88';const h=((.58+label*.61803398875)%1)*360;return `hsl(${h} 68% 43%)`}
+function alpha(i,n){return i===n-1?1:.10+.35*i/Math.max(1,n-2)}
+function fixed(v){return v===null?'Unavailable':v.toFixed(4)}
+for(const [id,c]of Object.entries(data.cases)){const o=document.createElement('option');o.value=id;o.textContent=`Case ${String(c.case_number).padStart(2,'0')}`;el('case').append(o)}
+el('case').value=data.selected;el('generation').max=generations.length-1;el('generation').value=generations.length-1;
+el('subtitle').textContent=`${data.run_id} · ${data.cohort} population · ${Object.keys(data.cases).length} separate evaluation-case maps`;
+function drawTrend(current){const svg=el('trend');svg.replaceChildren();const summaries=data.summary,w=360,h=245,left=48,top=46,bottom=195,right=338;const max=Math.max(...summaries.map(s=>s.semantic_nearest_neighbor))*1.2;
+const x=i=>left+(right-left)*i/Math.max(1,summaries.length-1),y=v=>bottom-(bottom-top)*v/max;
+svg.append(node('text',{x:10,y:18,class:'metric'},'Mean nearest-neighbor cosine distance'));
+for(let j=0;j<=3;j++){const v=max*j/3;svg.append(node('line',{x1:left,y1:y(v),x2:right,y2:y(v),stroke:'#e4e9ef'}));svg.append(node('text',{x:left-7,y:y(v)+4,'text-anchor':'end',class:'axis','font-size':11},v.toFixed(2)))}
+svg.append(node('path',{d:summaries.map((s,i)=>`${i?'L':'M'}${x(i)},${y(s.semantic_nearest_neighbor)}`).join(' '),fill:'none',stroke:'#2563a6','stroke-width':2}));
+summaries.forEach((s,i)=>{svg.append(node('circle',{cx:x(i),cy:y(s.semantic_nearest_neighbor),r:s.generation===current?7:3,fill:'#2563a6',opacity:s.generation===current?1:.5}));svg.append(node('text',{x:x(i),y:215,'text-anchor':'middle',class:'axis'},s.generation))});svg.append(node('text',{x:(left+right)/2,y:242,'text-anchor':'middle',class:'axis'},'Generation'))}
+function render(){const c=data.cases[el('case').value],index=Number(el('generation').value),generation=generations[index],history=el('history').checked,svg=el('map');el('generationLabel').textContent=generation;svg.replaceChildren();el('hover').textContent='Hover over an opaque point for strategy IDs.';
+const points=Object.values(c.points),xs=points.map(p=>p.x),ys=points.map(p=>p.y),minx=Math.min(...xs),maxx=Math.max(...xs),miny=Math.min(...ys),maxy=Math.max(...ys),dx=Math.max(1,maxx-minx)*1.2,dy=Math.max(1,maxy-miny)*1.2,scale=Math.min(680/dx,520/dy),cx=(minx+maxx)/2,cy=(miny+maxy)/2,x=v=>390+(v-cx)*scale,y=v=>295-(v-cy)*scale;
+svg.append(node('line',{x1:45,y1:565,x2:745,y2:565,stroke:'#c4ccd7'}));svg.append(node('line',{x1:45,y1:25,x2:45,y2:565,stroke:'#c4ccd7'}));svg.append(node('text',{x:390,y:604,'text-anchor':'middle',class:'axis'},'Projection axis 1'));svg.append(node('text',{x:15,y:295,'text-anchor':'middle',class:'axis',transform:'rotate(-90 15 295)'},'Projection axis 2'));
+const shown=history?generations.slice(0,index+1):[generation];shown.forEach((g,i)=>{const members={};for(const row of c.observations)if(row.generation===g)(members[row.prompt_hash]??=[]).push(row.candidate_id);for(const [hash,ids]of Object.entries(members)){const p=c.points[hash],latest=g===generation,n=node('circle',{cx:x(p.x),cy:y(p.y),r:(latest?5.8:2.7)*Math.sqrt(1+.35*(ids.length-1)),fill:color(p.cluster),opacity:history?alpha(i,shown.length):1,stroke:latest?'white':'none','stroke-width':.7});if(latest){n.append(node('title',{},`Generation ${g}; ${ids.length} strategies; ${p.cluster<0?'unassigned':`group ${p.cluster+1}`}\n${ids.join('\n')}`));n.addEventListener('mouseenter',()=>el('hover').textContent=`Group ${p.cluster<0?'unassigned':p.cluster+1} · ${ids.join(', ')} · hash ${hash.slice(0,12)}`)}svg.append(n)}});
+el('legend').replaceChildren();for(const label of [...new Set(points.map(p=>p.cluster))].sort((a,b)=>a-b)){const span=document.createElement('span'),dot=document.createElement('i');dot.className='swatch';dot.style.background=color(label);span.append(dot,document.createTextNode(label<0?'Unassigned':`Group ${label+1}`));el('legend').append(span)}
+const stat=c.stats.find(s=>s.generation===generation);el('stats').textContent=stat?`${stat.valid_strategies} strategies · ${stat.unique_prompts} unique prompts`:'No valid observations';const s=data.summary[index];el('coverage').textContent=`All-case NN distance: ${fixed(s.semantic_nearest_neighbor)} · case NN: ${fixed(stat?.semantic_nearest_neighbor??null)} · overall pair coverage: ${(s.semantic_pair_coverage*100).toFixed(1)}%`;
+el('quality').textContent=`Projection check for this case: trustworthiness ${c.quality.trustworthiness?.toFixed(3)??'unavailable'}; top-${c.quality.quality_neighbors} neighbor overlap ${((c.quality.neighbor_overlap??0)*100).toFixed(1)}%.`;drawTrend(generation)}
+function stop(){clearInterval(timer);timer=null;el('play').textContent='Play'}
+el('case').addEventListener('change',render);el('history').addEventListener('change',render);el('generation').addEventListener('input',()=>{stop();render()});el('play').addEventListener('click',()=>{if(timer){stop();return}if(Number(el('generation').value)===generations.length-1)el('generation').value=0;render();el('play').textContent='Pause';timer=setInterval(()=>{const next=Number(el('generation').value)+1;if(next>=generations.length){stop();return}el('generation').value=next;render()},1100)});render();
+</script>
+</html>
