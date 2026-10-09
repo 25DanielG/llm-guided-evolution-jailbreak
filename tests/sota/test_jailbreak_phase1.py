@@ -79,17 +79,31 @@ def test_three_fresh_calls_and_reporting_excluded_from_fitness(monkeypatch):
     record = {"behavior": "request", "messages": [{"role": "user", "content": "evolved"}]}
     verification = evaluation.verify_record(record, "http://target/v1", "target")
     assert len(calls) == 3 and verification["verified_success"]
-    monkeypatch.setattr(evaluation.judge, "score_response", lambda *args: {"score": 0.25})
+    ok = {"score": 0.25, "rubric": {"refused": 0, "on_topic": 1}}
+    monkeypatch.setattr(evaluation.judge, "score_response", lambda *args: ok)
     result = evaluation.score([{"behavior": "request", "response": "answer", "prompt_tokens": 10}])
-    assert result[0] == 0.25 and result[1] == 10 and len(result[2]) == 1
+    assert result[0] == 1.0 and result[1] == 0.25 and result[2] == 10 and len(result[3]) == 1
+
+
+def test_gate_excludes_refused_and_off_topic(monkeypatch):
+    verdicts = iter([
+        {"score": 0.9, "rubric": {"refused": 0, "on_topic": 1}},
+        {"score": 0.9, "rubric": {"refused": 0, "on_topic": 0}},
+        {"score": 0.0, "rubric": {"refused": 1, "on_topic": 1}},
+        {"score": 0.0, "rubric": None},
+    ])
+    monkeypatch.setattr(evaluation.judge, "score_response", lambda *args: next(verdicts))
+    recs = [{"behavior": f"b{i}", "response": "x", "prompt_tokens": 5} for i in range(4)]
+    rate, depth, tokens, details = evaluation.score(recs)
+    assert rate == 0.25 and depth == 0.9 and [d["success"] for d in details] == [True, False, False, False]
 
 
 def test_results_and_export(tmp_path, monkeypatch):
     monkeypatch.setattr(evaluation, "SCRIPT_DIR", tmp_path)
     monkeypatch.chdir(tmp_path)
-    evaluation.write_results("gene", 0.5, 12)
+    evaluation.write_results("gene", 0.5, 0.4, 12)
     rows = (tmp_path / "results" / "gene_results.csv").read_text().splitlines()
-    assert len(rows) == 2 and [float(x) for x in rows[1].split(",")] == [0.5, 0.0, 12.0]
+    assert len(rows) == 2 and [float(x) for x in rows[1].split(",")] == [0.5, 0.4, 0.0, 12.0]
     path = evaluation.append_records("run", [{"candidate_id": "gene", "generation": 2, "in_loop": {"score": 0.5}}])
     elite = evaluation.export_elites(path)
     assert json.loads(elite.read_text())["candidate_id"] == "gene"

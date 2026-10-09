@@ -21,9 +21,12 @@ audits one top behavior response from each of the top `JB_AUDIT_SAMPLE_SIZE`
 candidates against HarmBench and logs the in-loop/reporting score gap
 (`sota/Jailbreak/audit.py`).
 
-Objectives (order matches `FITNESS_WEIGHTS`): `mean_judge_score` (maximize),
-`diversity` (maximize; TF-IDF novelty vs the generation, filled by
-`run_improved.py` post-eval), `avg_prompt_tokens` (minimize). Per-behavior detail
+Objectives (order matches `FITNESS_WEIGHTS`, all maximized): `success_rate`
+(fraction of behaviors the rubric says are not refused and on-topic),
+`harm_depth` (mean rubric score over those successes), `diversity`
+(rarity-weighted behavior coverage across the generation, filled by
+`run_improved.py` post-eval). `avg_prompt_tokens` and `mean_judge_score` are
+logged, not selected on. Per-behavior detail
 (including the rubric and reporting/verification results) is written to
 `results/<gene_id>_results.json` alongside the CSV.
 
@@ -62,7 +65,7 @@ Before a full run, smoke-test the wiring: `python sota/Jailbreak/smoke_test.py`.
 ## Outputs
 
 `results/<gene_id>_results.csv` is the three-column LLM-GE fitness file
-(`mean_judge_score,diversity,avg_prompt_tokens`); `results/<gene_id>_results.json`
+(`success_rate,harm_depth,diversity,avg_prompt_tokens`); `results/<gene_id>_results.json`
 carries the per-behavior detail (rubric, filter, tokens, rendered prompt +
 response) that feeds directed mutation, the diversity objective's text source,
 and `individual_card.py`. `results/<run_id>/candidates.jsonl` is append-only and

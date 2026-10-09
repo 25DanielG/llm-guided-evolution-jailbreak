@@ -621,6 +621,30 @@ def _tfidf_diversity(docs):
         div.append(max(0.0, min(1.0, 1.0 - mean_sim)))
     return div
 
+def _success_vector_for_gene(gene_id):
+    """{behavior: 0/1 gated success} from a gene's sidecar JSON, or None."""
+    path = os.path.join(SOTA_ROOT, "results", f"{gene_id}_results.json")
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return None
+    vec = {b["behavior"]: int(bool(b.get("success"))) for b in data.get("behaviors", []) if "behavior" in b}
+    return vec or None
+
+def _coverage_diversity(vectors):
+    """Rarity-weighted behavior coverage. p_b = fraction of genes breaking b,
+    w_b = 1 - p_b, D_i = sum_b(s_ib * w_b) / B_i. A gene that breaks nothing
+    scores 0 (unlike pairwise distance, which would reward it for being
+    unlike everyone); breaking behaviors few others break scores high."""
+    n_with, n_broken = {}, {}
+    for vec in vectors:
+        for b, s in vec.items():
+            n_with[b] = n_with.get(b, 0) + 1
+            n_broken[b] = n_broken.get(b, 0) + s
+    weight = {b: 1.0 - n_broken[b] / n_with[b] for b in n_with}
+    return [sum(s * weight[b] for b, s in vec.items()) / len(vec) for vec in vectors]
+
 def apply_diversity_objective(population):
     """Fill the diversity fitness dimension across an evaluated group (the
     per-gene eval subprocess has no view of the population, so it writes a
@@ -629,18 +653,20 @@ def apply_diversity_objective(population):
     if div_idx is None:
         return
     invalid = {tuple(INVALID_FITNESS_MAX), tuple(PLACEHOLDER_FITNESS)}
-    texts = {}
+    mode = globals().get("DIVERSITY_MODE", "tfidf")
+    inputs = {}
     for ind in population:
         gene_id = ind[0]
         if not ind.fitness.valid or tuple(ind.fitness.values) in invalid:
             continue
-        text = _rendered_text_for_gene(gene_id)
-        if text:
-            texts[gene_id] = text
-    if len(texts) < 2:
+        item = _success_vector_for_gene(gene_id) if mode == "coverage" else _rendered_text_for_gene(gene_id)
+        if item:
+            inputs[gene_id] = item
+    if len(inputs) < 2:
         return
-    gene_ids = list(texts)
-    scores = dict(zip(gene_ids, _tfidf_diversity([texts[g] for g in gene_ids])))
+    gene_ids = list(inputs)
+    fn = _coverage_diversity if mode == "coverage" else _tfidf_diversity
+    scores = dict(zip(gene_ids, fn([inputs[g] for g in gene_ids])))
     for ind in population:
         gene_id = ind[0]
         if gene_id not in scores:

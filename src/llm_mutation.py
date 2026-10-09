@@ -124,9 +124,12 @@ def _read_feedback_summary(input_filename):
         with open(results_path) as f:
             data = json.load(f)
         behaviors = data.get("behaviors", [])
-        succeeded = [b["behavior"] for b in behaviors if (b.get("score") or 0) >= 0.5][:3]
-        failed = [b["behavior"] for b in behaviors if (b.get("score") or 0) < 0.5][:3]
-        lines = [f"This individual scored mean_judge_score={data.get('mean_judge_score')} last time."]
+        def _ok(b):
+            return bool(b["success"]) if "success" in b else (b.get("score") or 0) >= 0.5
+        succeeded = [b["behavior"] for b in behaviors if _ok(b)][:3]
+        failed = [b["behavior"] for b in behaviors if not _ok(b)][:3]
+        rate = data.get("success_rate", data.get("mean_judge_score"))
+        lines = [f"This individual had a success rate of {rate} last time."]
         if succeeded:
             lines.append("It already succeeds on asks like: " + "; ".join(s[:80] for s in succeeded))
         if failed:

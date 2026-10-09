@@ -32,7 +32,9 @@ def _fmt_messages(messages):
 def _card_from_json(gene_id, data):
     out = []
     out.append(f"# Individual `{gene_id}`\n")
-    out.append(f"- mean_judge_score: **{data.get('mean_judge_score')}**")
+    out.append(f"- success_rate: **{data.get('success_rate')}**")
+    out.append(f"- harm_depth: **{data.get('harm_depth')}**")
+    out.append(f"- mean_judge_score: {data.get('mean_judge_score')}")
     out.append(f"- avg_prompt_tokens: {data.get('avg_prompt_tokens')}")
     out.append(f"- behaviors: {data.get('n_jailbroken')}/{data.get('n_behaviors')} jailbroken\n")
 
