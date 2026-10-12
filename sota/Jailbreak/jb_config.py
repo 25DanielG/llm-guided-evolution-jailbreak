@@ -46,6 +46,10 @@ def judge_mode():
     # llm: open instruct model + safety rubric.
     return os.getenv("JB_JUDGE_MODE", "guard").lower()
 
+def judge_parse_retries():
+    """Extra tries when the judge returns output we can't parse. Total attempts = this + 1."""
+    return int(os.getenv("JB_JUDGE_PARSE_RETRIES", "1"))
+
 def behaviors_path():
     return os.getenv("JB_BEHAVIORS_PATH", os.path.join(HERE, "behaviors", "curated.csv"))
 
