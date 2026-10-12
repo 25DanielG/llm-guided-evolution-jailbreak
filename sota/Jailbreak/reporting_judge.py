@@ -8,6 +8,7 @@ import fcntl
 import hashlib
 import json
 import math
+import os
 import sqlite3
 from collections import Counter
 from pathlib import Path
@@ -336,3 +337,5 @@ if __name__ == "__main__":
     summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print(f"items={len(items)} runs={len(summary['per_run'])} unique_pairs={len(pairs)} "
           f"out={out} summary={summary_path}", flush=True)
+    if not args.dry_run and pairs:
+        os._exit(0)  # vLLM's engine-core subprocess can keep the Slurm job alive after outputs are written
