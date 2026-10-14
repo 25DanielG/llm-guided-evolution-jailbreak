@@ -38,6 +38,23 @@ uv run python sota/Jailbreak/pull_behaviors.py --n 30 # real AdvBench behaviors 
 hf download cais/HarmBench-Llama-2-13b-cls --local-dir "$HOME/scratch/llm_storage/HarmBench-Llama-2-13b-cls"
 ```
 
+### Stratified 50-behavior sampling
+
+`JB_STRATIFIED=1` (set in `run_jailbreak.sbatch`) scores every gene on
+`JB_N_BEHAVIORS_PER_EVAL=50` behaviors drawn equally from easy/medium/hard. The draw depends only on
+`JB_BEHAVIOR_SEED`, so all genes in a run share the same 50.
+
+```bash
+# 1. grow the pool past 50, run locally
+uv run python sota/Jailbreak/pull_behaviors.py --n 90 --extend
+# 2. on the cluster: pick ~20 genes spread over the verified-ASR range from an
+uv run python sota/Jailbreak/pick_calibration_genes.py sota/Jailbreak/results/<run_id>/candidates.jsonl \
+    -k 20 --variant-dir sota/Jailbreak/models/llmge_models > calibration_genes.txt
+sbatch --export=ALL,GENES_FILE=calibration_genes.txt calibrate_behaviors.sbatch
+# 3. tier every behavior from that one calibration run
+uv run python sota/Jailbreak/stratify_behaviors.py sota/Jailbreak/results/calib_<jobid>/candidates.jsonl
+```
+
 ## Run
 
 ```bash

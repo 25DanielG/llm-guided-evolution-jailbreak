@@ -26,7 +26,10 @@ export VLLM_USE_FLASHINFER_SAMPLER=0
 TARGET_MODEL="$HOME/scratch/llm_storage/Mistral-7B-Instruct-v0.2"
 JUDGE_MODEL="$HOME/scratch/llm_storage/Llama-3.1-8B-Instruct"
 REPORTING_MODEL="$HOME/scratch/llm_storage/HarmBench-Llama-2-13b-cls"
-export LOCAL=true LOCAL_LLM=true JB_JUDGE_MODE=llm JB_FULL_BEHAVIORS=1
+export LOCAL=true LOCAL_LLM=true JB_JUDGE_MODE=llm JB_FULL_BEHAVIORS=0
+# 50 behaviors per gene, equal easy/medium/hard; needs `tier` in curated.csv
+# (sota/Jailbreak/stratify_behaviors.py) or eval.py raises.
+export JB_STRATIFIED=1 JB_N_BEHAVIORS_PER_EVAL=50
 export JB_TARGET_MODEL_PATH="$TARGET_MODEL"
 export JB_JUDGE_MODEL_PATH="$JUDGE_MODEL"
 export JB_REPORTING_MODEL_PATH="$REPORTING_MODEL"
@@ -92,6 +95,8 @@ REPORTING_PID=$(start_with_retry "reporting vLLM" sota/Jailbreak/reporting_vllm.
 echo "$HOST:8003" > sota/Jailbreak/reporting_host.log
 export JB_REPORTING_VLLM_URL="http://$HOST:8003/v1"
 
+export SERVER_HOSTNAME=$HOST
+echo "$HOST" > hostname.log
 MUT_PID=$(start_with_retry "mutator" mutator.log \
     env CUDA_VISIBLE_DEVICES="$MUTATOR_DEV" uv run python -m uvicorn server:app \
     --host "$HOST" --port 8137) || exit 1

@@ -66,6 +66,15 @@ def behavior_seed():
 def use_full_behaviors():
     return os.getenv("JB_FULL_BEHAVIORS", "0").lower() in ("1", "true", "yes")
 
+def gene_results_dir():
+    """Where eval.py writes <gene>_results.{csv,json}"""
+    return os.getenv("JB_GENE_RESULTS_DIR", "results")
+
+def use_stratified():
+    """Sample an equal number of easy/medium/hard behaviors (needs a `tier`
+    column in the behaviors CSV)"""
+    return os.getenv("JB_STRATIFIED", "0").lower() in ("1", "true", "yes")
+
 def use_curriculum():
     return os.getenv("JB_CURRICULUM", "0").lower() in ("1", "true", "yes")
 

@@ -71,9 +71,14 @@ def extract_gene_id(model_arg):
         return model_arg.split(prefix, 1)[1]
     return "seed"
 
-def load_behaviors():
+TIERS = ("easy", "medium", "hard")
+
+def load_behavior_rows():
+    """Return [(difficulty, behavior, tier_or_None)] sorted easy->hard.
+    Optional CSV columns: `difficulty` (numeric, sort key) and `tier`.
+    """
     path = jb_config.behaviors_path()
-    rows = []  # (difficulty, behavior)
+    rows = []
     with open(path, "r", newline="") as f:
         reader = csv.DictReader(f)
         cols = reader.fieldnames or []
@@ -82,6 +87,7 @@ def load_behaviors():
         if text_col is None:
             raise ValueError(f"No behavior column found in {path}; columns={cols}")
         has_difficulty = "difficulty" in cols
+        has_tier = "tier" in cols
         for i, row in enumerate(reader):
             behavior = (row.get(text_col) or "").strip()
             if not behavior:
@@ -90,14 +96,62 @@ def load_behaviors():
                 diff = float(row["difficulty"]) if has_difficulty else i
             except (TypeError, ValueError):
                 diff = i
-            rows.append((diff, behavior))
+            tier = (row.get("tier") or "").strip().lower() if has_tier else ""
+            if tier and tier not in TIERS:
+                raise ValueError(f"Unknown tier {tier!r} for behavior {behavior!r}; expected one of {TIERS}")
+            rows.append((diff, behavior, tier or None))
     if not rows:
         raise ValueError(f"No behaviors loaded from {path}")
     # order easy->hard
     rows.sort(key=lambda r: r[0])
-    return [b for _, b in rows]
+    return rows
+
+def load_behaviors():
+    return [b for _, b, _ in load_behavior_rows()]
+
+def tier_quotas(n, available):
+    """Equal split of n across tiers; the remainder goes to the hardest tiers
+    first. If a tier doesn't have enough behaviors, it is capped at what it has."""
+    quotas = {t: 0 for t in TIERS}
+    order = list(reversed(TIERS))  # hard, medium, easy
+    base, extra = divmod(n, len(TIERS))
+    for i, t in enumerate(order):
+        quotas[t] = min(base + (1 if i < extra else 0), available.get(t, 0))
+    short = n - sum(quotas.values())
+    while short > 0:
+        grew = False
+        for t in order:
+            if short > 0 and quotas[t] < available.get(t, 0):
+                quotas[t] += 1
+                short -= 1
+                grew = True
+        if not grew:
+            break
+    return quotas
+
+def sample_stratified(rows, n, seed):
+    """Draw an equal number of easy/medium/hard behaviors. The draw depends only
+    on `seed`, to be the same across runs."""
+    by_tier = {t: [b for _, b, tier in rows if tier == t] for t in TIERS}
+    if not any(by_tier.values()):
+        raise ValueError("JB_STRATIFIED=1 but the behaviors CSV has no `tier` column values; "
+                         "run stratify_behaviors.py first")
+    unrated = sum(1 for _, _, tier in rows if tier is None)
+    if unrated:
+        print(f"WARNING: {unrated} behaviors have no tier and are excluded from stratified sampling", flush=True)
+    quotas = tier_quotas(n, {t: len(v) for t, v in by_tier.items()})
+    if sum(quotas.values()) < n:
+        print(f"WARNING: only {sum(quotas.values())} rated behaviors available, wanted {n}", flush=True)
+    rng = random.Random(seed)
+    picked = []
+    for t in TIERS:
+        picked.extend(rng.sample(by_tier[t], quotas[t]))
+    print(f"stratified sample: {', '.join(f'{t}={quotas[t]}' for t in TIERS)}", flush=True)
+    return picked
 
 def sample_behaviors(behaviors):
+    if jb_config.use_stratified():
+        return sample_stratified(load_behavior_rows(), jb_config.n_behaviors_per_eval(), jb_config.behavior_seed())
     if jb_config.use_full_behaviors():
         return behaviors
     n = jb_config.n_behaviors_per_eval()
@@ -231,7 +285,7 @@ def write_results(gene_id, harm_rate, avg_tokens, diversity=0.0):
     diversity is a placeholder here; run_improved.py fills it across the
     generation (the per-gene eval has no view of the population).
     """
-    filename = os.path.abspath(f"results/{gene_id}_results.csv")
+    filename = os.path.abspath(f"{jb_config.gene_results_dir()}/{gene_id}_results.csv")
     os.makedirs(os.path.dirname(filename), exist_ok=True)
     with open(filename, "w") as f:
         f.write("mean_judge_score,diversity,avg_prompt_tokens\n")
@@ -241,7 +295,7 @@ def write_results(gene_id, harm_rate, avg_tokens, diversity=0.0):
 def write_details(gene_id, harm_rate, avg_tokens, details, decoding=None):
     """Sidecar per-behavior JSON. Read by run_improved (diversity), directed
     mutation, the individual-card exporter, and the post-run report."""
-    filename = os.path.abspath(f"results/{gene_id}_results.json")
+    filename = os.path.abspath(f"{jb_config.gene_results_dir()}/{gene_id}_results.json")
     os.makedirs(os.path.dirname(filename), exist_ok=True)
     payload = {
         "gene_id": gene_id,
