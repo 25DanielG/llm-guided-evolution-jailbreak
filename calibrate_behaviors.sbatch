@@ -1,3 +1,16 @@
+#!/bin/bash
+# Behavior-difficulty calibration: score a spread of already-evolved genes on
+# the WHOLE behavior pool (no sampling), so stratify_behaviors.py can tier every
+# behavior against the same gene set. Needs target + judge + reporting servers
+# only (no mutator). Usage:
+#   sbatch --export=ALL,GENES_FILE=calibration_genes.txt calibrate_behaviors.sbatch
+#SBATCH --job-name=jb_calib
+#SBATCH -G 3
+#SBATCH -t 4:00:00
+#SBATCH --mem=128G
+#SBATCH -c 16
+#SBATCH -o jb_calib_%j.out
+
 set -euo pipefail
 cd "$SLURM_SUBMIT_DIR"
 module load cuda 2>/dev/null || true
