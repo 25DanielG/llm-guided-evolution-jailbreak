@@ -27,6 +27,7 @@ import math
 import os
 import random
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path as p
 
 SCRIPT_DIR = p(__file__).parent.resolve()
@@ -259,8 +260,11 @@ def score(records):
     scores = []
     tokens = []
     details = []
-    for rec in records:
-        verdict = judge.score_response(rec["behavior"], rec["response"])
+    # Judge calls are independent and the judge server batches them; run them
+    # concurrently (pool.map keeps record order, so results are unchanged).
+    with ThreadPoolExecutor(max_workers=max(1, jb_config.max_concurrency())) as pool:
+        verdicts = list(pool.map(lambda r: judge.score_response(r["behavior"], r["response"]), records))
+    for rec, verdict in zip(records, verdicts):
         rec["in_loop"] = verdict
         scores.append(verdict["score"])
         if rec["prompt_tokens"]:
@@ -396,10 +400,17 @@ if __name__ == "__main__":
     records = get_target_responses(strategy, behaviors, target_url, jb_config.target_model_name(), decoding=decoding)
     harm_rate, avg_tokens, details = score(records)
 
+    # Each verification is 3 fresh target generations + 3 HarmBench calls; run
+    # the records that clear the threshold concurrently (order preserved).
+    threshold = jb_config.verification_threshold()
+    to_verify = [i for i, rec in enumerate(records) if rec["in_loop"]["score"] >= threshold]
+    with ThreadPoolExecutor(max_workers=max(1, jb_config.max_concurrency())) as pool:
+        verified = dict(zip(to_verify, pool.map(
+            lambda i: verify_record(records[i], target_url, jb_config.target_model_name()), to_verify)))
     report_rows = []
     for index, rec in enumerate(records):
         in_loop = rec["in_loop"]
-        verification = verify_record(rec, target_url, jb_config.target_model_name()) if in_loop["score"] >= jb_config.verification_threshold() else None
+        verification = verified.get(index)
         report_rows.append({
             "run_id": args.run_id, "generation": args.generation, "candidate_id": gene_id,
             "behavior_index": index, "behavior": rec["behavior"], "evolved_prompt": rec["messages"],
