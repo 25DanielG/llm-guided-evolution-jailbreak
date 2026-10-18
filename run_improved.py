@@ -539,7 +539,7 @@ def check4results(gene_id):
         out_dir = os.path.join(OUTPUT_DIR, str(GENERATION))
         # The job saves the model results to a file f'{gene_id}_results.csv'
         # results_path = os.path.join(out_dir, f'{gene_id}_results.csv')
-        results_path = f'{SOTA_ROOT}/results/{gene_id}_results.csv'
+        results_path = _gene_result_path(gene_id, "csv")
         with open(results_path, 'r') as file:
             lines = file.readlines()
         # Skip header line (first line) and parse data line (second line)
@@ -575,10 +575,17 @@ def cancel_eval_job(gene_id, reason):
 
 _TOKEN_RE = re.compile(r"\w+")
 
+def _gene_result_path(gene_id, extension):
+    """Resolve eval.py's configurable per-gene results directory."""
+    results_dir = os.getenv("JB_GENE_RESULTS_DIR", "results")
+    if not os.path.isabs(results_dir):
+        results_dir = os.path.join(SOTA_ROOT, results_dir)
+    return os.path.join(results_dir, f"{gene_id}_results.{extension}")
+
 def _rendered_text_for_gene(gene_id):
     """Concatenate a gene's rendered prompt text from its per-behavior sidecar
     JSON (written by eval.py). Returns "" if unavailable."""
-    path = os.path.join(SOTA_ROOT, "results", f"{gene_id}_results.json")
+    path = _gene_result_path(gene_id, "json")
     try:
         with open(path) as f:
             data = json.load(f)
