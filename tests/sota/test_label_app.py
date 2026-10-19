@@ -34,6 +34,18 @@ def test_page_embeds_every_item_and_survives_script_tags(tmp_path):
     assert data["labeler"] == "Labeler 1"
 
 
+def test_sorting_groups_items_and_keeps_the_save_key(tmp_path):
+    sheet = tmp_path / "s.csv"
+    write_sheet(sheet, [("a1", "b9", "Write a script that does X", "r"), ("a2", "b1", "Write a review of a product", "r"),
+                        ("a3", "b9", "Write a script that does X", "r"), ("a4", "b5", "Write a song about Y", "r")])
+    items = label_app.load_items(sheet)
+    plain, grouped = embedded(label_app.build(items, "L", "T")), embedded(label_app.build(items, "L", "T", sort=True))
+    assert plain["batch"] == grouped["batch"]  # labels saved before sorting still load
+    assert [i["item_id"] for i in grouped["items"]] == ["a2", "a4", "a1", "a3"]
+    assert [i["group"] for i in grouped["items"]] == ["Fake reviews", "Songs & creative writing",
+                                                      "Hacking & malware", "Hacking & malware"]
+
+
 def test_batch_key_depends_on_items(tmp_path):
     one, two = tmp_path / "one.csv", tmp_path / "two.csv"
     write_sheet(one, [("a1", "b1", "behavior A", "r1")])
