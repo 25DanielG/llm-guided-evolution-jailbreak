@@ -45,6 +45,9 @@ def target_model_name():
 def judge_model_name():
     return os.getenv("JB_JUDGE_SERVED_NAME", "meta-llama/Llama-3.3-70B-Instruct")
 
+def judge_temperature():
+    return float(os.getenv("JB_JUDGE_TEMPERATURE", "0.1"))
+
 def reporting_model_name():
     return os.getenv("JB_REPORTING_SERVED_NAME", "cais/HarmBench-Llama-2-13b-cls")
 

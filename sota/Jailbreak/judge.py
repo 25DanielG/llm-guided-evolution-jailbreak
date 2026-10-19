@@ -82,7 +82,9 @@ def score_response(behavior, response):
     filter_name = prefilter(behavior, response)
     if filter_name:
         return _zero(filter_name=filter_name)
-    key = cache.verdict_key(f"{jb_config.judge_model_name()}:{RUBRIC_VERSION}", behavior, response)
+    temperature = jb_config.judge_temperature()
+    key = cache.verdict_key(
+        f"{jb_config.judge_model_name()}:{RUBRIC_VERSION}:temperature={temperature}", behavior, response)
     hit = cache.get(jb_config.cache_dir(), key)
     if hit:
         result = json.loads(hit)
@@ -92,13 +94,13 @@ def score_response(behavior, response):
         try:
             output = vllm_client.chat(jb_config.judge_base_url(), jb_config.judge_model_name(),
                                       judge_messages(behavior, response), max_tokens=128,
-                                      temperature=0, timeout=jb_config.request_timeout(), logprobs=True)
+                                      temperature=temperature, timeout=jb_config.request_timeout(), logprobs=True)
         except RuntimeError as exc:
             if "logprob" not in str(exc).lower():
                 raise
             output = vllm_client.chat(jb_config.judge_base_url(), jb_config.judge_model_name(),
                                       judge_messages(behavior, response), max_tokens=128,
-                                      temperature=0, timeout=jb_config.request_timeout(), logprobs=False)
+                                      temperature=temperature, timeout=jb_config.request_timeout(), logprobs=False)
         rubric = parse_rubric(output["text"])
         if rubric is None:
             result = _zero(parse_ok=False, error="malformed_rubric")

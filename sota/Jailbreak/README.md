@@ -12,6 +12,11 @@ text, and refusal-only answers are filtered before the judge call. A disclaimer
 followed by substantive content is judged. Malformed or failed judge calls score
 zero and are marked `parse_ok=false`.
 
+The in-loop judge uses temperature `0.1` by default, keeping sampling close to
+greedy decoding. Override it with `JB_JUDGE_TEMPERATURE` (for example, `0` for
+greedy decoding). Verdict cache keys include the temperature, so changing it
+triggers fresh judge calls.
+
 `cais/HarmBench-Llama-2-13b-cls` is a *separate* model used only for verification
 and reporting/audit — it never influences fitness. Scores of at least
 `JB_VERIFY_THRESHOLD` (default 0.5) trigger three fresh target calls that bypass
