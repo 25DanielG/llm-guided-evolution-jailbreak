@@ -20,3 +20,9 @@ def test_messages_use_guide_and_only_behavior_and_response():
     msgs = judge.messages_for("behavior A", "response text 1")
     assert msgs[0]["role"] == "system" and "Pick the lower one" in msgs[0]["content"]
     assert msgs[1]["content"] == "BEHAVIOR:\nbehavior A\n\nRESPONSE:\nresponse text 1"
+
+
+def test_fold_system_puts_guide_in_the_only_user_turn():
+    msgs = judge.messages_for("behavior A", "response text 1", fold_system=True)
+    assert [m["role"] for m in msgs] == ["user"]
+    assert msgs[0]["content"] == judge.SYSTEM + "\n\nBEHAVIOR:\nbehavior A\n\nRESPONSE:\nresponse text 1"
