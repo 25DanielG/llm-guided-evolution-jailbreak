@@ -69,8 +69,9 @@ PAGE = r"""<!doctype html>
   .bar { height:8px; background:var(--soft); border-radius:4px; overflow:hidden; }
   .bar > div { height:100%; background:var(--full); width:0; transition:width .2s; }
   .count { font-size:12px; color:var(--muted); margin-top:3px; }
-  .saved { font-size:12px; color:var(--muted); min-width:120px; }
-  .saved.warn { color:var(--refusal); font-weight:600; }
+  .saved { font-size:12px; color:var(--muted); min-width:150px; line-height:1.4; }
+  .warn { color:var(--refusal); font-weight:600; }
+  .ok { color:var(--full); }
   button { font:inherit; cursor:pointer; border:1px solid var(--line); background:var(--card); color:var(--ink);
            border-radius:7px; padding:7px 12px; }
   button:hover { border-color:var(--accent); }
@@ -115,7 +116,8 @@ PAGE = r"""<!doctype html>
 <header>
   <h1 id="title"></h1>
   <div class="progress"><div class="bar"><div id="bar"></div></div><div class="count" id="count"></div></div>
-  <div class="saved" id="saved">Not saved yet</div>
+  <div class="saved"><span id="saved">Not saved yet</span><br><span id="fileStatus"></span></div>
+  <button id="fileBtn" hidden title="Also write every change to a CSV file on your disk">Also save to a file…</button>
   <button id="guideBtn">Guide</button>
   <button id="importBtn" title="Restore from a labels CSV you downloaded earlier">Import</button>
   <button id="exportBtn">Download labels</button>
@@ -182,15 +184,91 @@ PAGE = r"""<!doctype html>
 
   function save() {
     state.pos = cur;
-    if (!storageOk) { $("saved").textContent = "Not saved: download your labels"; $("saved").className = "saved warn"; return; }
+    scheduleFileWrite();
+    if (!storageOk) { $("saved").textContent = "Not saved in browser: download your labels"; $("saved").className = "warn"; return; }
     try {
       localStorage.setItem(KEY, JSON.stringify(state));
-      $("saved").textContent = "Saved ✓ " + new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-      $("saved").className = "saved";
+      $("saved").textContent = "Saved in browser ✓ " + new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+      $("saved").className = "";
     } catch (e) {
       storageOk = false; $("banner").classList.add("show"); save();
     }
   }
+
+  // Second save layer (Chrome/Edge): every change is also written to a CSV file the labeler picks once.
+  // The file handle is remembered in IndexedDB; after a restart Chrome asks for one click to re-allow it.
+  // Connecting a file first merges any labels already in it, so a backup is never overwritten with less.
+  let fileHandle = null, fileState = "off", fileTimer = null, fileBusy = false, fileAgain = false;
+  const fileName = "labels_" + D.labeler.replace(/[^a-z0-9]+/gi, "_").toLowerCase() + "_" + D.batch + ".csv";
+  function idb(mode, fn) {
+    return new Promise((resolve, reject) => {
+      const open = indexedDB.open("label-app", 1);
+      open.onupgradeneeded = () => open.result.createObjectStore("handles");
+      open.onerror = () => reject(open.error);
+      open.onsuccess = () => {
+        try {
+          const tx = open.result.transaction("handles", mode), req = fn(tx.objectStore("handles"));
+          tx.oncomplete = () => resolve(req && req.result);
+          tx.onerror = tx.onabort = () => reject(tx.error);
+        } catch (e) { reject(e); }  // e.g. a handle the browser can't store
+      };
+    });
+  }
+  function showFile() {
+    const s = $("fileStatus"), b = $("fileBtn");
+    b.hidden = !("showSaveFilePicker" in window);
+    if (fileState === "on") { s.textContent = "Also saving to " + fileHandle.name + " ✓"; s.className = "ok"; b.textContent = "Change file…"; }
+    else if (fileState === "reconnect") { s.textContent = "File backup paused"; s.className = "warn"; b.textContent = "Reconnect " + fileHandle.name; }
+    else if (fileState === "error") { s.textContent = "File backup failed: click to pick a file again"; s.className = "warn"; b.textContent = "Also save to a file…"; }
+    else { s.textContent = b.hidden ? "" : "No file backup yet"; s.className = ""; b.textContent = "Also save to a file…"; }
+  }
+  function mergeFromCsv(text) {
+    const rows = parseCsv(text), head = rows.shift() || [];
+    const iid = head.indexOf("item_id"), il = head.indexOf("label"), ic = head.indexOf("confidence"), inn = head.indexOf("notes");
+    if (iid < 0 || il < 0) return 0;
+    const ids = new Set(items.map((it) => it.item_id)); let n = 0;
+    rows.forEach((r) => {
+      const id = (r[iid] || "").trim(), label = (r[il] || "").trim().toLowerCase();
+      if (!ids.has(id) || !["refusal", "partial", "full"].includes(label) || (state.answers[id] || {}).label) return;
+      state.answers[id] = { label, confidence: ic >= 0 ? (r[ic] || "").trim().toLowerCase() : "", notes: inn >= 0 ? r[inn] || "" : "" }; n++;
+    });
+    return n;
+  }
+  async function writeFile() {
+    if (fileState !== "on") return;
+    if (fileBusy) { fileAgain = true; return; }
+    fileBusy = true;
+    try { const w = await fileHandle.createWritable(); await w.write(csvText()); await w.close(); }
+    catch (e) { fileState = (e && e.name === "NotAllowedError") ? "reconnect" : "error"; showFile(); }
+    fileBusy = false;
+    if (fileAgain) { fileAgain = false; writeFile(); }
+  }
+  function scheduleFileWrite() { if (fileState === "on") { clearTimeout(fileTimer); fileTimer = setTimeout(writeFile, 250); } }
+  async function activate(handle) {
+    fileHandle = handle; fileState = "on";
+    try { const merged = mergeFromCsv(await (await handle.getFile()).text()); if (merged) { save(); render(); alert("Restored " + merged + " labels from " + handle.name + "."); } }
+    catch (e) { /* new or empty file */ }
+    try { await idb("readwrite", (s) => s.put(handle, KEY)); } catch (e) { /* handle not storable; still saves this session */ }
+    showFile(); writeFile();
+  }
+  $("fileBtn").onclick = async () => {
+    try {
+      if (fileState === "reconnect" && (await fileHandle.requestPermission({ mode: "readwrite" })) === "granted") return activate(fileHandle);
+      const handle = await window.showSaveFilePicker({ suggestedName: fileName, types: [{ description: "CSV", accept: { "text/csv": [".csv"] } }] });
+      await activate(handle);
+    } catch (e) { if (!e || e.name !== "AbortError") { fileState = "error"; showFile(); } }
+  };
+  (async () => {
+    showFile();
+    if (!("showSaveFilePicker" in window)) return;
+    try {
+      const handle = await idb("readonly", (s) => s.get(KEY));
+      if (!handle) return;
+      fileHandle = handle;
+      if ((await handle.queryPermission({ mode: "readwrite" })) === "granted") await activate(handle);
+      else { fileState = "reconnect"; showFile(); }
+    } catch (e) { /* no stored handle */ }
+  })();
   function setAnswer(field, value) {
     const id = items[cur].item_id;
     state.answers[id] = Object.assign({}, state.answers[id], { [field]: value });
@@ -261,14 +339,17 @@ PAGE = r"""<!doctype html>
   });
 
   const q = (v) => { v = v == null ? "" : String(v); return /[",\n\r]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
-  function exportCsv() {
+  function csvText() {
     const lines = ["item_id,behavior_id,label,confidence,notes"];
     items.forEach((it) => { const a = state.answers[it.item_id] || {};
       lines.push([it.item_id, it.behavior_id, a.label || "", a.confidence || "", a.notes || ""].map(q).join(",")); });
-    const blob = new Blob([lines.join("\r\n") + "\r\n"], { type: "text/csv" });
+    return lines.join("\r\n") + "\r\n";
+  }
+  function exportCsv() {
+    const blob = new Blob([csvText()], { type: "text/csv" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = "labels_" + D.labeler.replace(/[^a-z0-9]+/gi, "_").toLowerCase() + "_" + D.batch + ".csv";
+    a.download = fileName;
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   }
