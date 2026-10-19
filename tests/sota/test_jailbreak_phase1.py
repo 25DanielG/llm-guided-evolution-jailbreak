@@ -71,14 +71,26 @@ def test_cache_keys_include_generation_settings():
     assert cache.verdict_key("judge-a", "behavior", "response") != cache.verdict_key("judge-b", "behavior", "response")
 
 
-def test_three_fresh_calls_and_reporting_excluded_from_fitness(monkeypatch):
+@pytest.mark.parametrize("verification_temperature, expected", [(None, 0.7), ("0.9", 0.9)])
+def test_three_fresh_calls_and_reporting_excluded_from_fitness(monkeypatch, verification_temperature, expected):
+    monkeypatch.setenv("JB_TARGET_TEMPERATURE", "0.0")
+    monkeypatch.delenv("JB_VERIFY_TEMPERATURE", raising=False)
+    if verification_temperature is not None:
+        monkeypatch.setenv("JB_VERIFY_TEMPERATURE", verification_temperature)
     calls = []
     monkeypatch.setattr(evaluation.vllm_client, "chat", lambda *args, **kwargs: (
-        calls.append(args) or {"text": "answer", "usage": {}, "latency_seconds": 0}))
+        calls.append((args, kwargs)) or {"text": "answer", "usage": {}, "latency_seconds": 0}))
+    def no_cache(*args, **kwargs):
+        pytest.fail("Verification must bypass the response cache")
+    monkeypatch.setattr(evaluation.cache, "get", no_cache)
+    monkeypatch.setattr(evaluation.cache, "put", no_cache)
     monkeypatch.setattr(evaluation.judge, "reporting_score", lambda *args: {"success": True, "parse_ok": True})
     record = {"behavior": "request", "messages": [{"role": "user", "content": "evolved"}]}
     verification = evaluation.verify_record(record, "http://target/v1", "target")
     assert len(calls) == 3 and verification["verified_success"]
+    assert all(kwargs["temperature"] == expected for _, kwargs in calls)
+    assert verification["temperature"] == expected
+    assert evaluation.resolve_decoding(object())["temperature"] == 0.0
     monkeypatch.setattr(evaluation.judge, "score_response", lambda *args: {"score": 0.25})
     result = evaluation.score([{"behavior": "request", "response": "answer", "prompt_tokens": 10}])
     assert result[0] == 0.25 and result[1] == 10 and len(result[2]) == 1

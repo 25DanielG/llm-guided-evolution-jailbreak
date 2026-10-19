@@ -90,6 +90,9 @@ def target_max_new_tokens():
 def target_temperature():
     return float(os.getenv("JB_TARGET_TEMPERATURE", "0.0"))
 
+def verification_temperature():
+    return float(os.getenv("JB_VERIFY_TEMPERATURE", "0.7"))
+
 def request_timeout():
     return float(os.getenv("JB_REQUEST_TIMEOUT", "120"))
 
