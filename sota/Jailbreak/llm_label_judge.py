@@ -10,6 +10,7 @@ Response text is never printed.
 import argparse
 import csv
 import json
+import math
 import os
 import re
 from pathlib import Path
@@ -56,6 +57,19 @@ def parse_reply(text):
     return (found[0], "") if len(set(found)) == 1 else ("", "")
 
 
+def label_probs(candidates):
+    """{label: probability} from first-token (text, logprob) candidates after '{"label": "', renormalized over the
+    three labels; a token counts toward a label when it is a 2+ character prefix of exactly that label."""
+    mass = dict.fromkeys(LABELS, 0.0)
+    for text, logprob in candidates:
+        token = (text or "").strip().lower()
+        matches = [label for label in LABELS if len(token) >= 2 and label.startswith(token)]
+        if len(matches) == 1:
+            mass[matches[0]] += math.exp(logprob)
+    total = sum(mass.values())
+    return {label: value / total for label, value in mass.items()} if total else None
+
+
 def load_sheet(path):
     with open(path, newline="", encoding="utf-8") as file:
         return [{"item_id": r["item_id"], "behavior": r["behavior"], "response": r["response"]}
@@ -71,24 +85,37 @@ if __name__ == "__main__":
     parser.add_argument("--max-model-len", type=int, default=4096)
     parser.add_argument("--fold-system", action="store_true",
                         help="put the guide in the user turn (models whose chat template rejects a system role)")
+    parser.add_argument("--probs", action="store_true",
+                        help="instead of generating, read the label distribution after '{\"label\": \"' from logprobs")
     args = parser.parse_args()
 
     from vllm import LLM, SamplingParams
     items = load_sheet(args.sheet)
     llm = LLM(model=args.model, tensor_parallel_size=args.tp, max_model_len=args.max_model_len,
               gpu_memory_utilization=0.92, seed=0, enforce_eager=True)  # eager: no torch.compile/JIT kernels
-    outputs = llm.chat([messages_for(i["behavior"], i["response"], args.fold_system) for i in items],
-                       SamplingParams(temperature=0.0, max_tokens=60))
+    conversations = [messages_for(i["behavior"], i["response"], args.fold_system) for i in items]
     rows = []
-    for item, out in zip(items, outputs):
-        reply = out.outputs[0].text
-        label, confidence = parse_reply(reply)
-        rows.append({"item_id": item["item_id"], "label": label, "confidence": confidence,
-                     "raw": " ".join(reply.split())[:200]})
+    if args.probs:
+        prefix = {"role": "assistant", "content": '{"label": "'}
+        outputs = llm.chat([c + [prefix] for c in conversations],
+                           SamplingParams(temperature=0.0, max_tokens=1, logprobs=20),
+                           add_generation_prompt=False, continue_final_message=True)
+        for item, out in zip(items, outputs):
+            step = (out.outputs[0].logprobs or [{}])[0]
+            probs = label_probs((lp.decoded_token, lp.logprob) for lp in step.values()) or {}
+            rows.append({"item_id": item["item_id"], "label": max(probs, key=probs.get) if probs else "",
+                         "confidence": "", **{f"p_{label}": probs.get(label, "") for label in LABELS}})
+    else:
+        outputs = llm.chat(conversations, SamplingParams(temperature=0.0, max_tokens=60))
+        for item, out in zip(items, outputs):
+            reply = out.outputs[0].text
+            label, confidence = parse_reply(reply)
+            rows.append({"item_id": item["item_id"], "label": label, "confidence": confidence,
+                         "raw": " ".join(reply.split())[:200]})
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, "w", newline="", encoding="utf-8") as file:
-        writer = csv.DictWriter(file, fieldnames=["item_id", "label", "confidence", "raw"])
+        writer = csv.DictWriter(file, fieldnames=list(rows[0]))
         writer.writeheader()
         writer.writerows(rows)
     counts = {label: sum(r["label"] == label for r in rows) for label in LABELS}

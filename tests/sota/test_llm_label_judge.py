@@ -1,4 +1,6 @@
 import importlib
+
+import pytest
 import sys
 from pathlib import Path
 
@@ -26,3 +28,12 @@ def test_fold_system_puts_guide_in_the_only_user_turn():
     msgs = judge.messages_for("behavior A", "response text 1", fold_system=True)
     assert [m["role"] for m in msgs] == ["user"]
     assert msgs[0]["content"] == judge.SYSTEM + "\n\nBEHAVIOR:\nbehavior A\n\nRESPONSE:\nresponse text 1"
+
+
+def test_label_probs_sums_label_prefix_tokens_and_renormalizes():
+    import math
+    probs = judge.label_probs([("full", math.log(0.5)), (" part", math.log(0.2)), ("ref", math.log(0.1)),
+                               ("f", math.log(0.1)), ("unsafe", math.log(0.1))])  # "f" is too short, "unsafe" no label
+    assert probs["full"] == pytest.approx(0.625) and probs["partial"] == pytest.approx(0.25)
+    assert probs["refusal"] == pytest.approx(0.125)
+    assert judge.label_probs([("unsafe", 0.0)]) is None
