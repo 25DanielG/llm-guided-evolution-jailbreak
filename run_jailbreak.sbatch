@@ -2,6 +2,11 @@
 # Production topology: 1 GPU target, 1 GPU judge, 1 GPU reporting (HarmBench,
 # verification/audit only), 1 GPU mutator.
 # Adjust Slurm allocation and groups together if using a different GPU type.
+# Judge override (defaults unchanged): JB_RUN_JUDGE_MODEL, JB_RUN_JUDGE_TP (judge
+# GPUs, default 1), JB_RUN_JUDGE_MAX_LEN (vllm --max-model-len); needs
+# 1 + JB_RUN_JUDGE_TP + 2 GPUs. JB_RUN_MUTATOR_MODEL is independent of the judge.
+# Guide judge on the shared 70B (bf16, 2 x 80GB GPUs; sota/Jailbreak/README.md):
+#   sbatch -N 1 -G 5 -C "A100-80GB|H100|H200" --export=ALL,JB_JUDGE_PROMPT=guide,JB_RUN_JUDGE_MODEL=/storage/ice-shared/vip-vvk/llm_storage/meta-llama/Llama-3.3-70B-Instruct,JB_RUN_JUDGE_TP=2,JB_RUN_JUDGE_MAX_LEN=4096 run_jailbreak.sbatch
 #SBATCH --job-name=jb_run
 #SBATCH -G 4
 #SBATCH -t 4:00:00
@@ -24,7 +29,12 @@ mkdir -p "$UV_CACHE_DIR"
 export VLLM_USE_FLASHINFER_SAMPLER=0
 
 TARGET_MODEL="$HOME/scratch/llm_storage/Mistral-7B-Instruct-v0.2"
-JUDGE_MODEL="$HOME/scratch/llm_storage/Llama-3.1-8B-Instruct"
+LLAMA_8B="$HOME/scratch/llm_storage/Llama-3.1-8B-Instruct"
+JUDGE_MODEL="${JB_RUN_JUDGE_MODEL:-$LLAMA_8B}"
+JUDGE_TP="${JB_RUN_JUDGE_TP:-1}"
+JUDGE_MAX_LEN="${JB_RUN_JUDGE_MAX_LEN:-}"
+JUDGE_PROMPT="${JB_JUDGE_PROMPT-rubric}"  # unset -> rubric, same as jb_config.judge_prompt()
+MUTATOR_MODEL="${JB_RUN_MUTATOR_MODEL:-$LLAMA_8B}"
 REPORTING_MODEL="$HOME/scratch/llm_storage/HarmBench-Llama-2-13b-cls"
 export LOCAL=true LOCAL_LLM=true JB_JUDGE_MODE=llm JB_FULL_BEHAVIORS=0
 # 50 behaviors per gene, equal easy/medium/hard; needs `tier` in curated.csv
@@ -36,20 +46,48 @@ export JB_TARGET_MODEL_PATH="$TARGET_MODEL"
 export JB_JUDGE_MODEL_PATH="$JUDGE_MODEL"
 export JB_REPORTING_MODEL_PATH="$REPORTING_MODEL"
 export JB_REPORTING_SERVED_NAME="cais/HarmBench-Llama-2-13b-cls"
-export JB_MUTATOR_MODEL_PATH="$JUDGE_MODEL"
+export JB_MUTATOR_MODEL_PATH="$MUTATOR_MODEL"
 
 HOST=$(hostname)
 
+if ! [[ "$JUDGE_TP" =~ ^[1-9][0-9]*$ ]]; then
+    echo "ERROR: JB_RUN_JUDGE_TP must be a positive integer, got: $JUDGE_TP" >&2
+    exit 1
+fi
+case "$JUDGE_PROMPT" in
+    rubric|guide) ;;
+    *) echo "ERROR: JB_JUDGE_PROMPT must be rubric or guide, got: '$JUDGE_PROMPT'" >&2; exit 1 ;;
+esac
+if [ "$JUDGE_PROMPT" = guide ] && [ "$JUDGE_MODEL" = "$LLAMA_8B" ]; then
+    echo "WARNING: JB_JUDGE_PROMPT=guide on the default 8B judge; it was validated on the 70B (set JB_RUN_JUDGE_MODEL)" >&2
+fi
+# Rubric verdict cache keys carry no model identity (served name is always "judge"), so a
+# non-default rubric judge gets its own cache dir instead of reusing the 8B's verdicts.
+if [ "$JUDGE_PROMPT" = rubric ] && [ "$JUDGE_MODEL" != "$LLAMA_8B" ]; then
+    export JB_CACHE_DIR="${JB_CACHE_DIR:-$HOME/scratch/jb_cache}/judge_$(basename "$JUDGE_MODEL")"
+    echo "Non-default rubric judge: verdict + response cache at $JB_CACHE_DIR"
+fi
+# target, JUDGE_TP judge GPUs, reporting, mutator
+NEED_GPUS=$((JUDGE_TP + 3))
 IFS=',' read -ra GPU_IDS <<< "$CUDA_VISIBLE_DEVICES"
-if [ "${#GPU_IDS[@]}" -lt 4 ]; then
-    echo "ERROR: expected 4 GPUs from Slurm, got: $CUDA_VISIBLE_DEVICES" >&2
+if [ "${#GPU_IDS[@]}" -lt "$NEED_GPUS" ]; then
+    echo "ERROR: expected $NEED_GPUS GPUs from Slurm (judge tp=$JUDGE_TP; use sbatch -G $NEED_GPUS), got: $CUDA_VISIBLE_DEVICES" >&2
     exit 1
 fi
 TARGET_DEV="${GPU_IDS[0]}"
-JUDGE_DEV="${GPU_IDS[1]}"
-REPORTING_DEV="${GPU_IDS[2]}"
-MUTATOR_DEV="${GPU_IDS[3]}"
+JUDGE_DEV=$(IFS=','; echo "${GPU_IDS[*]:1:JUDGE_TP}")
+REPORTING_DEV="${GPU_IDS[JUDGE_TP + 1]}"
+MUTATOR_DEV="${GPU_IDS[JUDGE_TP + 2]}"
 echo "Slurm gave GPUs: $CUDA_VISIBLE_DEVICES -> target=$TARGET_DEV judge=$JUDGE_DEV reporting=$REPORTING_DEV mutator=$MUTATOR_DEV"
+echo "Judge: $JUDGE_MODEL (tp=$JUDGE_TP, prompt=$JUDGE_PROMPT); mutator: $MUTATOR_MODEL"
+JUDGE_EXTRA_ARGS=""
+# Multi-GPU vLLM JIT-builds FlashInfer all-reduce kernels with 'ninja' (not on PATH here): use vLLM's own
+# all-reduce, and eager mode so the compile-time all-reduce fusion pass doesn't build one either.
+if [ "$JUDGE_TP" -gt 1 ]; then
+    export VLLM_ALLREDUCE_USE_FLASHINFER=0
+    JUDGE_EXTRA_ARGS="--tensor-parallel-size $JUDGE_TP --enforce-eager"
+fi
+if [ -n "$JUDGE_MAX_LEN" ]; then JUDGE_EXTRA_ARGS="$JUDGE_EXTRA_ARGS --max-model-len $JUDGE_MAX_LEN"; fi
 
 # Retry a service's own startup a few times before giving up
 start_with_retry() {
@@ -84,7 +122,7 @@ export JB_TARGET_VLLM_URL="http://$HOST:8001/v1"
 JUDGE_PID=$(start_with_retry "judge vLLM" sota/Jailbreak/judge_vllm.out \
     env CUDA_VISIBLE_DEVICES="$JUDGE_DEV" vllm serve "$JUDGE_MODEL" \
     --served-model-name judge --host 0.0.0.0 --port 8002 \
-    --gpu-memory-utilization 0.9) || exit 1
+    --gpu-memory-utilization 0.9 $JUDGE_EXTRA_ARGS) || exit 1
 echo "$HOST:8002" > sota/Jailbreak/judge_host.log
 export JB_JUDGE_VLLM_URL="http://$HOST:8002/v1"
 export JB_JUDGE_SERVED_NAME=judge

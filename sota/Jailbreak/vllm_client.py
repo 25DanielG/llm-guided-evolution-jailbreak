@@ -35,12 +35,14 @@ def assert_model(base_url, model):
     if model not in served:
         raise RuntimeError(f"{base_url} serves {sorted(served)}, expected {model}")
 
-def chat(base_url, model, messages, max_tokens=512, temperature=0.0, top_p=None, timeout=120, retries=2, logprobs=False):
+def chat(base_url, model, messages, max_tokens=512, temperature=0.0, top_p=None, timeout=120, retries=2, logprobs=False,
+         top_logprobs=5, extra=None):
     """One chat completion. Returns {"text", "prompt_tokens"}.
     Raises RuntimeError if the server is unreachable after retries (infra failure,
     distinct from the model producing a refusal). top_p is omitted from the
     payload when None (server default), so per-individual decoding (trait_decoding)
-    is opt-in without changing existing callers.
+    is opt-in without changing existing callers. extra is merged into the payload
+    (e.g. vLLM's continue_final_message); None leaves it unchanged.
     """
     url = f"{base_url}/chat/completions"
     payload = {
@@ -52,7 +54,9 @@ def chat(base_url, model, messages, max_tokens=512, temperature=0.0, top_p=None,
     if top_p is not None:
         payload["top_p"] = top_p
     if logprobs:
-        payload.update(logprobs=True, top_logprobs=5)
+        payload.update(logprobs=True, top_logprobs=top_logprobs)
+    if extra:
+        payload.update(extra)
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {API_KEY}"}
     last_err = None
     for attempt in range(retries + 1):
