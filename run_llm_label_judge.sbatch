@@ -6,6 +6,7 @@
 # JB_LABEL_JUDGE_MODEL_PATH (and pass --tp 1 for a model that fits on one GPU). Gemma-2 and Mixtral need --fold-system.
 # JB_LABEL_JUDGE_SCRIPT=sota/Jailbreak/replay_inloop_judge.py replays the in-loop rubric instead (needs --judge-py).
 #SBATCH --job-name=jb_llm_label
+#SBATCH -N 1
 #SBATCH -G 2
 #SBATCH -C "A100-80GB|H100|H200"
 #SBATCH -t 1:00:00

@@ -6,6 +6,7 @@
 #       --out sota/Jailbreak/results/<run_id>/reporting.csv
 # Override the classifier weights with JB_REPORTING_MODEL_PATH=/path/to/HarmBench-Llama-2-13b-cls.
 #SBATCH --job-name=jb_reporting
+#SBATCH -N 1
 #SBATCH -G 1
 #SBATCH -C "A100-40GB|A100-80GB|A40|L40S|H100|H200"
 #SBATCH -t 1:00:00
