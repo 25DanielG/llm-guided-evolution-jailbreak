@@ -76,7 +76,9 @@ def chat(base_url, model, messages, max_tokens=512, temperature=0.0, top_p=None,
 
 def chat_batch(base_url, model, messages_list, max_tokens=512, temperature=0.0,
                top_p=None, timeout=120, max_concurrency=16):
-    """Run many chat completions concurrently, preserving input order."""
+    """Run many chat completions concurrently, preserving input order. A failed
+    item comes back with an "error" key (and empty text) so callers can tell an
+    infra/template failure from a real empty reply."""
     results = [None] * len(messages_list)
 
     def _one(idx_messages):
@@ -85,8 +87,8 @@ def chat_batch(base_url, model, messages_list, max_tokens=512, temperature=0.0,
             return idx, chat(base_url, model, messages, max_tokens=max_tokens,
                              temperature=temperature, top_p=top_p, timeout=timeout)
         except RuntimeError as err:
-            print(f"  chat failed for one item, scoring empty: {err}", flush=True)
-            return idx, {"text": "", "prompt_tokens": 0}
+            print(f"  chat failed for one item: {err}", flush=True)
+            return idx, {"text": "", "prompt_tokens": 0, "usage": {}, "latency_seconds": 0, "error": str(err)}
 
     with ThreadPoolExecutor(max_workers=max(1, max_concurrency)) as pool:
         for idx, result in pool.map(_one, list(enumerate(messages_list))):

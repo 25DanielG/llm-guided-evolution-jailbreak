@@ -30,6 +30,8 @@ export LOCAL=true LOCAL_LLM=true JB_JUDGE_MODE=llm JB_FULL_BEHAVIORS=0
 # 50 behaviors per gene, equal easy/medium/hard; needs `tier` in curated.csv
 # (sota/Jailbreak/stratify_behaviors.py) or eval.py raises.
 export JB_STRATIFIED=1 JB_N_BEHAVIORS_PER_EVAL=50
+# Fresh response/verdict cache per run so cached failures from older runs are not reused
+export JB_CACHE_DIR="${JB_CACHE_DIR:-$HOME/scratch/jb_cache_${RUN_ID:-jb_${SLURM_JOB_ID}}}"
 export JB_TARGET_MODEL_PATH="$TARGET_MODEL"
 export JB_JUDGE_MODEL_PATH="$JUDGE_MODEL"
 export JB_REPORTING_MODEL_PATH="$REPORTING_MODEL"

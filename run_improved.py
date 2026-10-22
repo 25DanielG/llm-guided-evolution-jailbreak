@@ -1121,6 +1121,23 @@ def true_nsga2(pop, k):
     new_pop = tools.selTournamentDCD(pop, k) # mults of 4
     return new_pop
 
+def _case_scores_for_gene(gene_id):
+    """{behavior: score} from the gene's per-behavior sidecar JSON, or None."""
+    path = os.path.join(SOTA_ROOT, "results", f"{gene_id}_results.json")
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return {b["behavior"]: float(b["score"]) for b in data.get("behaviors", [])} or None
+
+def lexicase_select(pop, k):
+    from src.lexicase import lexicase_select as _select
+    k = k // 4 * 4
+    case_scores = {ind[0]: _case_scores_for_gene(ind[0]) for ind in pop}
+    return _select(pop, k, key_fn=lambda ind: ind[0], case_scores=case_scores,
+                   epsilon=globals().get("LEXICASE_EPSILON", "mad"))
+
 def create_population(n, llm_model):
     individual_func = partial(toolbox.individual, llm_model=llm_model)
     return tools.initRepeat(list, individual_func, n)
@@ -1136,7 +1153,11 @@ toolbox.register("population", create_population)
 toolbox.register("evaluate", evalModel)
 toolbox.register("mate", customCrossover)
 toolbox.register("mutate", customMutation, indpb=0.2)
-toolbox.register("select", true_nsga2)
+_SELECTORS = {"nsga2": true_nsga2, "lexicase": lexicase_select}
+_selection_method = globals().get("SELECTION_METHOD", "nsga2")
+if _selection_method not in _SELECTORS:
+    raise ValueError(f"Unknown SELECTION_METHOD {_selection_method!r}; expected one of {list(_SELECTORS)}")
+toolbox.register("select", _SELECTORS[_selection_method])
 
 # TODO: start using percent diff of train acc vs val test acc as an over fitt metric 
 
