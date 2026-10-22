@@ -423,7 +423,10 @@ if __name__ == "__main__":
     export_elites(path)
     in_loop_rate = sum(r["in_loop"]["score"] >= jb_config.verification_threshold() for r in report_rows) / len(report_rows) if report_rows else 0.0
     verified_rate = sum(bool(r["verification"] and r["verification"]["verified_success"]) for r in report_rows) / len(report_rows) if report_rows else 0.0
-    print(f"mean_judge_score={harm_rate:.4f} in_loop_success_rate={in_loop_rate:.4f} verified_success_rate={verified_rate:.4f} avg_prompt_tokens={avg_tokens:.1f}", flush=True)
+    # guide mode only: failed judge calls score 0 silently, so surface them in the summary line
+    parse_failures = (f" judge_parse_failures={sum(not r['in_loop']['parse_ok'] for r in report_rows)}"
+                      if jb_config.judge_prompt() == "guide" else "")
+    print(f"mean_judge_score={harm_rate:.4f} in_loop_success_rate={in_loop_rate:.4f} verified_success_rate={verified_rate:.4f} avg_prompt_tokens={avg_tokens:.1f}{parse_failures}", flush=True)
 
     write_results(gene_id, harm_rate, avg_tokens)
     write_details(gene_id, harm_rate, avg_tokens, details, decoding=decoding)
