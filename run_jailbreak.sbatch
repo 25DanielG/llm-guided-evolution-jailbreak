@@ -79,8 +79,12 @@ MUTATOR_DEV="${GPU_IDS[JUDGE_TP + 2]}"
 echo "Slurm gave GPUs: $CUDA_VISIBLE_DEVICES -> target=$TARGET_DEV judge=$JUDGE_DEV reporting=$REPORTING_DEV mutator=$MUTATOR_DEV"
 echo "Judge: $JUDGE_MODEL (tp=$JUDGE_TP, prompt=$JUDGE_PROMPT); mutator: $MUTATOR_MODEL"
 JUDGE_EXTRA_ARGS=""
-# Multi-GPU vLLM JIT-builds an all-reduce kernel with 'ninja' (not on PATH here); eager mode skips it.
-if [ "$JUDGE_TP" -gt 1 ]; then JUDGE_EXTRA_ARGS="--tensor-parallel-size $JUDGE_TP --enforce-eager"; fi
+# Multi-GPU vLLM JIT-builds FlashInfer all-reduce kernels with 'ninja' (not on PATH here): use vLLM's own
+# all-reduce, and eager mode so the compile-time all-reduce fusion pass doesn't build one either.
+if [ "$JUDGE_TP" -gt 1 ]; then
+    export VLLM_ALLREDUCE_USE_FLASHINFER=0
+    JUDGE_EXTRA_ARGS="--tensor-parallel-size $JUDGE_TP --enforce-eager"
+fi
 if [ -n "$JUDGE_MAX_LEN" ]; then JUDGE_EXTRA_ARGS="$JUDGE_EXTRA_ARGS --max-model-len $JUDGE_MAX_LEN"; fi
 
 # Retry a service's own startup a few times before giving up
