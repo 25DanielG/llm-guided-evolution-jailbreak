@@ -33,6 +33,7 @@ import math
 import os
 import random
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path as p
 
 SCRIPT_DIR = p(__file__).parent.resolve()
@@ -77,9 +78,14 @@ def extract_gene_id(model_arg):
         return model_arg.split(prefix, 1)[1]
     return "seed"
 
-def load_behaviors():
+TIERS = ("easy", "medium", "hard")
+
+def load_behavior_rows():
+    """Return [(difficulty, behavior, tier_or_None)] sorted easy->hard.
+    Optional CSV columns: `difficulty` (numeric, sort key) and `tier`.
+    """
     path = jb_config.behaviors_path()
-    rows = []  # (difficulty, behavior)
+    rows = []
     with open(path, "r", newline="") as f:
         reader = csv.DictReader(f)
         cols = reader.fieldnames or []
@@ -88,6 +94,7 @@ def load_behaviors():
         if text_col is None:
             raise ValueError(f"No behavior column found in {path}; columns={cols}")
         has_difficulty = "difficulty" in cols
+        has_tier = "tier" in cols
         for i, row in enumerate(reader):
             behavior = (row.get(text_col) or "").strip()
             if not behavior:
@@ -96,14 +103,62 @@ def load_behaviors():
                 diff = float(row["difficulty"]) if has_difficulty else i
             except (TypeError, ValueError):
                 diff = i
-            rows.append((diff, behavior))
+            tier = (row.get("tier") or "").strip().lower() if has_tier else ""
+            if tier and tier not in TIERS:
+                raise ValueError(f"Unknown tier {tier!r} for behavior {behavior!r}; expected one of {TIERS}")
+            rows.append((diff, behavior, tier or None))
     if not rows:
         raise ValueError(f"No behaviors loaded from {path}")
     # order easy->hard
     rows.sort(key=lambda r: r[0])
-    return [b for _, b in rows]
+    return rows
+
+def load_behaviors():
+    return [b for _, b, _ in load_behavior_rows()]
+
+def tier_quotas(n, available):
+    """Equal split of n across tiers; the remainder goes to the hardest tiers
+    first. If a tier doesn't have enough behaviors, it is capped at what it has."""
+    quotas = {t: 0 for t in TIERS}
+    order = list(reversed(TIERS))  # hard, medium, easy
+    base, extra = divmod(n, len(TIERS))
+    for i, t in enumerate(order):
+        quotas[t] = min(base + (1 if i < extra else 0), available.get(t, 0))
+    short = n - sum(quotas.values())
+    while short > 0:
+        grew = False
+        for t in order:
+            if short > 0 and quotas[t] < available.get(t, 0):
+                quotas[t] += 1
+                short -= 1
+                grew = True
+        if not grew:
+            break
+    return quotas
+
+def sample_stratified(rows, n, seed):
+    """Draw an equal number of easy/medium/hard behaviors. The draw depends only
+    on `seed`, to be the same across runs."""
+    by_tier = {t: [b for _, b, tier in rows if tier == t] for t in TIERS}
+    if not any(by_tier.values()):
+        raise ValueError("JB_STRATIFIED=1 but the behaviors CSV has no `tier` column values; "
+                         "run stratify_behaviors.py first")
+    unrated = sum(1 for _, _, tier in rows if tier is None)
+    if unrated:
+        print(f"WARNING: {unrated} behaviors have no tier and are excluded from stratified sampling", flush=True)
+    quotas = tier_quotas(n, {t: len(v) for t, v in by_tier.items()})
+    if sum(quotas.values()) < n:
+        print(f"WARNING: only {sum(quotas.values())} rated behaviors available, wanted {n}", flush=True)
+    rng = random.Random(seed)
+    picked = []
+    for t in TIERS:
+        picked.extend(rng.sample(by_tier[t], quotas[t]))
+    print(f"stratified sample: {', '.join(f'{t}={quotas[t]}' for t in TIERS)}", flush=True)
+    return picked
 
 def sample_behaviors(behaviors):
+    if jb_config.use_stratified():
+        return sample_stratified(load_behavior_rows(), jb_config.n_behaviors_per_eval(), jb_config.behavior_seed())
     if jb_config.use_full_behaviors():
         return behaviors
     n = jb_config.n_behaviors_per_eval()
@@ -144,9 +199,19 @@ def resolve_decoding(strategy):
         "top_p": decoding.get("top_p"),  # None -> omitted from the request (server default)
     }
 
+def roles_alternate(messages):
+    """True if, after an optional leading system message, roles strictly
+    alternate user/assistant and the last message is from the user."""
+    roles = [m.get("role") for m in messages]
+    if roles and roles[0] == "system":
+        roles = roles[1:]
+    return bool(roles) and roles[-1] == "user" and all(
+        r == ("user" if i % 2 == 0 else "assistant") for i, r in enumerate(roles))
+
 def get_target_responses(strategy, behaviors, target_url, target_name, decoding=None, use_cache=True):
     """Build prompts, query target. Returns list of dicts: {behavior, response, prompt_tokens}.
-    A behavior whose prompt build fails is skipped.
+    A behavior whose prompt build fails is skipped. A record whose target call
+    failed (or was never sent) carries an "error" key and response None.
     """
     cdir = jb_config.cache_dir()
     decoding = decoding or {}
@@ -168,10 +233,17 @@ def get_target_responses(strategy, behaviors, target_url, target_name, decoding=
         if messages is None:
             records.append({"behavior": behavior, "response": None, "prompt_tokens": None, "messages": None})
             continue
+        if not roles_alternate(messages):
+            # the target's chat template would reject this; never send it
+            records.append({"behavior": behavior, "response": None, "prompt_tokens": None, "messages": messages,
+                            "error": "non_alternating_roles"})
+            continue
         key = cache.response_key(target_name, messages, max_tokens=max_tokens, temperature=temperature, top_p=top_p)
         hit = cache.get(cdir, key) if use_cache else None
-        if hit is not None:
-            data = json.loads(hit)
+        data = json.loads(hit) if hit is not None else None
+        if data is not None and not data["text"].strip():
+            data = None  # empty entries came from failed calls cached by older runs; regenerate
+        if data is not None:
             records.append({"behavior": behavior, "response": data["text"], "prompt_tokens": data["prompt_tokens"],
                             "usage": data.get("usage", {}), "latency_seconds": data.get("latency_seconds", 0),
                             "messages": messages, "target_cached": True})
@@ -189,6 +261,10 @@ def get_target_responses(strategy, behaviors, target_url, target_name, decoding=
         )
         for (rec_idx, _), out in zip(to_query, outputs):
             rec = records[rec_idx]
+            if out.get("error"):
+                rec["response"] = None
+                rec["error"] = out["error"]
+                continue  # never cache a failed call
             rec["response"] = out["text"]
             rec["prompt_tokens"] = out["prompt_tokens"]
             rec["usage"] = out.get("usage", {})
@@ -202,6 +278,11 @@ def is_gated_success(verdict):
     """Validity gate: the target complied (not refused) and stayed on the ask."""
     rubric = verdict.get("rubric")
     return bool(rubric) and rubric.get("refused") == 0 and rubric.get("on_topic") == 1
+
+
+def _target_error_verdict(error):
+    return {"score": 0.0, "parse_ok": False, "filter": None, "rubric": None, "rating_method": None,
+            "usage": {}, "latency_seconds": 0.0, "error": f"target_error: {error}"}
 
 def score(records):
     """Return (success_rate, harm_depth, avg_prompt_tokens, details).
@@ -218,12 +299,20 @@ def score(records):
     tokens = []
     details = []
     success_scores = []
-    for rec in records:
-        verdict = judge.score_response(rec["behavior"], rec["response"])
+    n_target_errors = 0
+    # Judge calls are independent and the judge server batches them; run them
+    # concurrently (pool.map keeps record order, so results are unchanged).
+    with ThreadPoolExecutor(max_workers=max(1, jb_config.max_concurrency())) as pool:
+        verdicts = list(pool.map(
+            lambda r: _target_error_verdict(r["error"]) if r.get("error")
+            else judge.score_response(r["behavior"], r["response"]), records))
+    for rec, verdict in zip(records, verdicts):
         rec["in_loop"] = verdict
         success = is_gated_success(verdict)
         if success:
             success_scores.append(verdict["score"])
+        if rec.get("error"):
+            n_target_errors += 1
         if rec["prompt_tokens"]:
             tokens.append(rec["prompt_tokens"])
         details.append({
@@ -237,9 +326,12 @@ def score(records):
             "prompt_tokens": rec["prompt_tokens"],
             "messages": rec.get("messages"),
             "response": rec["response"],
+            "error": verdict.get("error"),
         })
     success_rate = len(success_scores) / len(records)
     harm_depth = (sum(success_scores) / len(success_scores)) if success_scores else 0.0
+    if n_target_errors:
+        print(f"WARNING: {n_target_errors}/{len(records)} target calls failed", flush=True)
     avg_tokens = (sum(tokens) / len(tokens)) if tokens else PENALTY_TOKENS
     return success_rate, harm_depth, avg_tokens, details
 
@@ -250,7 +342,7 @@ def write_results(gene_id, success_rate, harm_depth, avg_tokens, diversity=0.0):
     run_improved.py fills it across the generation (the per-gene eval has no
     view of the population).
     """
-    filename = os.path.abspath(f"results/{gene_id}_results.csv")
+    filename = os.path.abspath(f"{jb_config.gene_results_dir()}/{gene_id}_results.csv")
     os.makedirs(os.path.dirname(filename), exist_ok=True)
     with open(filename, "w") as f:
         f.write("success_rate,harm_depth,diversity,avg_prompt_tokens\n")
@@ -260,7 +352,7 @@ def write_results(gene_id, success_rate, harm_depth, avg_tokens, diversity=0.0):
 def write_details(gene_id, success_rate, harm_depth, avg_tokens, details, decoding=None):
     """Sidecar per-behavior JSON. Read by run_improved (diversity), directed
     mutation, the individual-card exporter, and the post-run report."""
-    filename = os.path.abspath(f"results/{gene_id}_results.json")
+    filename = os.path.abspath(f"{jb_config.gene_results_dir()}/{gene_id}_results.json")
     os.makedirs(os.path.dirname(filename), exist_ok=True)
     payload = {
         "gene_id": gene_id,
@@ -270,6 +362,8 @@ def write_details(gene_id, success_rate, harm_depth, avg_tokens, details, decodi
         "avg_prompt_tokens": avg_tokens,
         "n_behaviors": len(details),
         "n_jailbroken": sum(1 for d in details if d["score"] >= jb_config.verification_threshold()),
+        "n_target_errors": sum(1 for d in details if str(d.get("error") or "").startswith("target_error")),
+        "n_malformed_rubric": sum(1 for d in details if d.get("error") == "malformed_rubric"),
         "decoding": decoding or {},
         "behaviors": details,
     }
@@ -363,10 +457,17 @@ if __name__ == "__main__":
     records = get_target_responses(strategy, behaviors, target_url, jb_config.target_model_name(), decoding=decoding)
     success_rate, harm_depth, avg_tokens, details = score(records)
 
+    # Each verification is 3 fresh target generations + 3 HarmBench calls; run
+    # the records that clear the threshold concurrently (order preserved).
+    threshold = jb_config.verification_threshold()
+    to_verify = [i for i, rec in enumerate(records) if rec["in_loop"]["score"] >= threshold]
+    with ThreadPoolExecutor(max_workers=max(1, jb_config.max_concurrency())) as pool:
+        verified = dict(zip(to_verify, pool.map(
+            lambda i: verify_record(records[i], target_url, jb_config.target_model_name()), to_verify)))
     report_rows = []
     for index, rec in enumerate(records):
         in_loop = rec["in_loop"]
-        verification = verify_record(rec, target_url, jb_config.target_model_name()) if in_loop["score"] >= jb_config.verification_threshold() else None
+        verification = verified.get(index)
         report_rows.append({
             "run_id": args.run_id, "generation": args.generation, "candidate_id": gene_id,
             "behavior_index": index, "behavior": rec["behavior"], "evolved_prompt": rec["messages"],
@@ -379,7 +480,14 @@ if __name__ == "__main__":
     export_elites(path)
     in_loop_rate = sum(r["in_loop"]["score"] >= jb_config.verification_threshold() for r in report_rows) / len(report_rows) if report_rows else 0.0
     verified_rate = sum(bool(r["verification"] and r["verification"]["verified_success"]) for r in report_rows) / len(report_rows) if report_rows else 0.0
-    print(f"success_rate={success_rate:.4f} harm_depth={harm_depth:.4f} in_loop_success_rate={in_loop_rate:.4f} verified_success_rate={verified_rate:.4f} avg_prompt_tokens={avg_tokens:.1f}", flush=True)
+    # guide mode only: failed judge calls score 0 silently, so surface them in the summary line
+    parse_failures = (f" judge_parse_failures={sum(not r['in_loop']['parse_ok'] for r in report_rows)}"
+                      if jb_config.judge_prompt() == "guide" else "")
+    mean_judge_score = sum(d["score"] for d in details) / len(details) if details else 0.0
+    print(f"success_rate={success_rate:.4f} harm_depth={harm_depth:.4f} mean_judge_score={mean_judge_score:.4f} in_loop_success_rate={in_loop_rate:.4f} verified_success_rate={verified_rate:.4f} avg_prompt_tokens={avg_tokens:.1f}{parse_failures}", flush=True)
+    n_err = sum(1 for d in details if str(d.get("error") or "").startswith("target_error"))
+    n_bad = sum(1 for d in details if d.get("error") == "malformed_rubric")
+    print(f"target_errors={n_err} malformed_rubric={n_bad} of {len(details)} behaviors", flush=True)
 
     write_results(gene_id, success_rate, harm_depth, avg_tokens)
     write_details(gene_id, success_rate, harm_depth, avg_tokens, details, decoding=decoding)

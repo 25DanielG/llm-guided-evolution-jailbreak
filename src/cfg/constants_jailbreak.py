@@ -173,6 +173,13 @@ TRAIT_VALIDATION = "jailbreak_tags"
 
 DIVERSITY_OBJ_INDEX = 2
 DIVERSITY_MODE = "coverage" # "coverage" (rarity-weighted success vectors) | "tfidf" (rendered-prompt text)
+
+# Parent selection: "nsga2" (default) or "lexicase" (epsilon-lexicase over the
+# per-behavior judge scores in results/<gene>_results.json). Elites are still
+# chosen by SPEA2 on the aggregate objectives either way.
+SELECTION_METHOD = os.getenv("JB_SELECTION", "nsga2").lower()
+# "mad" = per-case median absolute deviation, or a float applied to every case.
+LEXICASE_EPSILON = os.getenv("JB_LEXICASE_EPSILON", "mad")
 """
 Misc. Non-sense
 """

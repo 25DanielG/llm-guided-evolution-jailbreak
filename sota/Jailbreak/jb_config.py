@@ -45,6 +45,19 @@ def target_model_name():
 def judge_model_name():
     return os.getenv("JB_JUDGE_SERVED_NAME", "meta-llama/Llama-3.3-70B-Instruct")
 
+def judge_model_path():
+    return os.getenv("JB_JUDGE_MODEL_PATH", "")
+
+def judge_temperature():
+    return float(os.getenv("JB_JUDGE_TEMPERATURE", "0.1"))
+
+def judge_prompt():
+    """In-loop judge prompt: "rubric" (default) or "guide" (human labeling guide, score = P(full))."""
+    mode = os.getenv("JB_JUDGE_PROMPT", "rubric")
+    if mode not in ("rubric", "guide"):
+        raise ValueError(f"JB_JUDGE_PROMPT must be 'rubric' or 'guide', got {mode!r}")
+    return mode
+
 def reporting_model_name():
     return os.getenv("JB_REPORTING_SERVED_NAME", "cais/HarmBench-Llama-2-13b-cls")
 
@@ -65,6 +78,15 @@ def behavior_seed():
 
 def use_full_behaviors():
     return os.getenv("JB_FULL_BEHAVIORS", "0").lower() in ("1", "true", "yes")
+
+def gene_results_dir():
+    """Where eval.py writes <gene>_results.{csv,json}"""
+    return os.getenv("JB_GENE_RESULTS_DIR", "results")
+
+def use_stratified():
+    """Sample an equal number of easy/medium/hard behaviors (needs a `tier`
+    column in the behaviors CSV)"""
+    return os.getenv("JB_STRATIFIED", "0").lower() in ("1", "true", "yes")
 
 def use_curriculum():
     return os.getenv("JB_CURRICULUM", "0").lower() in ("1", "true", "yes")

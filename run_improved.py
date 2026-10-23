@@ -776,7 +776,6 @@ def update_individual(ind, new_gene_id, old_gene_id=None, process_success=True, 
 
     if process_success:
         ind[0] = new_gene_id
-        ind = creator.Individual([new_gene_id])
         if old_gene_id is not None and old_gene_id in GLOBAL_DATA.keys():
             del GLOBAL_DATA[old_gene_id]
         print(f'\t☑ {operation}: {new_gene_id}')
@@ -786,14 +785,13 @@ def update_individual(ind, new_gene_id, old_gene_id=None, process_success=True, 
             del GLOBAL_DATA[new_gene_id]
         if old_gene_id is not None:
             ind[0] = old_gene_id
-            ind = creator.Individual([old_gene_id])
 
     return ind
 
 # TODO: I need to cycle through by the job id to match the sub order
 def delayed_mate_check(offspring):
     if DELAYED_CHECK is True:
-        for individual in offspring:
+        for index, individual in enumerate(offspring):
             k = individual[0]
             if k in GLOBAL_DATA and GLOBAL_DATA[k]["status"] == "DELAYED_CHECK":
                 GLOBAL_DATA[k]["status"]="subbed file"
@@ -809,14 +807,14 @@ def delayed_mate_check(offspring):
                     print(f'\t‣ Error Loading Model Files for {new_gene_id}!!', flush=True)
 
                 failed_process = not (successful_sub_flag and job_done)
-                if failed_process:
-                    new_gene_id = LINKED_GENES[k]
-                    old_gene_id = k
-                else:
-                    new_gene_id = k
-                    old_gene_id = LINKED_GENES[k]
-                individual = update_individual(individual, new_gene_id, old_gene_id=old_gene_id, 
-                                               process_success=not failed_process, process_type='Mating')
+                parent_gene_id = LINKED_GENES[k]
+                offspring[index] = update_individual(
+                    individual,
+                    k,
+                    old_gene_id=parent_gene_id,
+                    process_success=not failed_process,
+                    process_type='Mating',
+                )
 
     return offspring
 
@@ -850,11 +848,12 @@ def delayed_mutate_check(offspring):
         Updated list of offspring
     """
     if DELAYED_CHECK is True:
-        for individual in offspring:
+        for index, individual in enumerate(offspring):
             k = individual[0]
             if k in GLOBAL_DATA and GLOBAL_DATA[k]["status"] == "DELAYED_CHECK":
                 GLOBAL_DATA[k]["status"]="subbed file"
                 successful_sub_flag = GLOBAL_DATA[k]["sub_flag"]
+                job_done = False
                 if successful_sub_flag:
                     new_gene_id = k
                     job_id = GLOBAL_DATA[k]["job_id"]
@@ -866,11 +865,39 @@ def delayed_mutate_check(offspring):
                     else: 
                         print(f'\t☠ Error Loading Model Files for {new_gene_id}')
 
-                    failed_process = not (successful_sub_flag and job_done)
-                    old_gene_id = LINKED_GENES[k]
-                    individual = update_individual(individual, new_gene_id, old_gene_id=old_gene_id,
-                                                   process_success=not failed_process, process_type='Mutation')
+                failed_process = not (successful_sub_flag and job_done)
+                old_gene_id = LINKED_GENES[k]
+                offspring[index] = update_individual(
+                    individual,
+                    k,
+                    old_gene_id=old_gene_id,
+                    process_success=not failed_process,
+                    process_type='Mutation',
+                )
                   
+    return offspring
+
+
+def apply_crossover(offspring, llm_model):
+    """Apply crossover and store the returned children in ``offspring``."""
+    for index in range(0, len(offspring) - 1, 2):
+        if random.random() < crossover_probability:
+            child1, child2 = toolbox.mate(
+                offspring[index], offspring[index + 1], llm_model=llm_model
+            )
+            offspring[index], offspring[index + 1] = child1, child2
+            del child1.fitness.values
+            del child2.fitness.values
+    return offspring
+
+
+def apply_mutation(offspring, llm_model):
+    """Apply mutation and store each returned child in ``offspring``."""
+    for index, individual in enumerate(offspring):
+        if random.random() < mutation_probability:
+            mutant = toolbox.mutate(individual=individual, llm_model=llm_model)
+            offspring[index] = mutant
+            del mutant.fitness.values
     return offspring
 
 def customCrossover(ind1, ind2, llm_model):
@@ -1120,6 +1147,23 @@ def true_nsga2(pop, k):
     new_pop = tools.selTournamentDCD(pop, k) # mults of 4
     return new_pop
 
+def _case_scores_for_gene(gene_id):
+    """{behavior: score} from the gene's per-behavior sidecar JSON, or None."""
+    path = os.path.join(SOTA_ROOT, "results", f"{gene_id}_results.json")
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return {b["behavior"]: float(b["score"]) for b in data.get("behaviors", [])} or None
+
+def lexicase_select(pop, k):
+    from src.lexicase import lexicase_select as _select
+    k = k // 4 * 4
+    case_scores = {ind[0]: _case_scores_for_gene(ind[0]) for ind in pop}
+    return _select(pop, k, key_fn=lambda ind: ind[0], case_scores=case_scores,
+                   epsilon=globals().get("LEXICASE_EPSILON", "mad"))
+
 def create_population(n, llm_model):
     individual_func = partial(toolbox.individual, llm_model=llm_model)
     return tools.initRepeat(list, individual_func, n)
@@ -1135,7 +1179,11 @@ toolbox.register("population", create_population)
 toolbox.register("evaluate", evalModel)
 toolbox.register("mate", customCrossover)
 toolbox.register("mutate", customMutation, indpb=0.2)
-toolbox.register("select", true_nsga2)
+_SELECTORS = {"nsga2": true_nsga2, "lexicase": lexicase_select}
+_selection_method = globals().get("SELECTION_METHOD", "nsga2")
+if _selection_method not in _SELECTORS:
+    raise ValueError(f"Unknown SELECTION_METHOD {_selection_method!r}; expected one of {list(_SELECTORS)}")
+toolbox.register("select", _SELECTORS[_selection_method])
 
 # TODO: start using percent diff of train acc vs val test acc as an over fitt metric 
 
@@ -1264,11 +1312,7 @@ if __name__ == "__main__":
 
         # Apply crossover on the offspring
         box_print("Mating", print_bbox_len=60, new_line_end=False)
-        for child1, child2 in zip(offspring[::2], offspring[1::2]):
-            if random.random() < crossover_probability:
-                child1, child2 = toolbox.mate(child1, child2, llm_model=llm_model)
-                del child1.fitness.values
-                del child2.fitness.values 
+        offspring = apply_crossover(offspring, llm_model)
                 
         box_print("Batch Checking Mated Genes", print_bbox_len=60, new_line_end=False)       
         offspring = delayed_mate_check(offspring)
@@ -1276,10 +1320,7 @@ if __name__ == "__main__":
         
         # Apply mutation on the offspring
         box_print("Mutating", print_bbox_len=60, new_line_end=False)
-        for mutant in offspring:
-            if random.random() < mutation_probability:
-                toolbox.mutate(individual=mutant, llm_model=llm_model)
-                del mutant.fitness.values
+        offspring = apply_mutation(offspring, llm_model)
                 
         box_print(f"GLOBAL_DATA_ANCESTRY", new_line_end=False)
         print_ancestry(GLOBAL_DATA_ANCESTRY)

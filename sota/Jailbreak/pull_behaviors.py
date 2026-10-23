@@ -1,6 +1,7 @@
 """Populate behaviors/curated.csv from a public harmful-behavior benchmark.
     uv run python pull_behaviors.py --n 30 --out behaviors/curated.csv
     uv run python pull_behaviors.py --url <other_csv_url> --n 40
+    uv run python pull_behaviors.py --n 90 --extend   # keep existing rows, add new ones up to 90 total
 """
 
 import argparse
@@ -22,6 +23,9 @@ def main():
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--out", default=os.path.join(os.path.dirname(__file__), "behaviors", "curated.csv"))
     parser.add_argument("--source", default="advbench")
+    parser.add_argument("--extend", action="store_true",
+                        help="keep the rows already in --out (incl. tier columns) and append new "
+                             "behaviors until --n total; existing behaviors stay put")
     args = parser.parse_args()
 
     print(f"Downloading {args.url}")
@@ -36,18 +40,32 @@ def main():
 
     behaviors = [(r.get(text_col) or "").strip() for r in reader]
     behaviors = [b for b in behaviors if b]
+    existing, fields = [], ["id", "source", "behavior"]
+    if args.extend and os.path.exists(args.out):
+        with open(args.out, newline="") as f:
+            reader = csv.DictReader(f)
+            fields = reader.fieldnames or fields
+            existing = list(reader)
+    have = {r["behavior"].strip() for r in existing}
+    fresh = [b for b in behaviors if b not in have]
     rng = random.Random(args.seed)
-    if args.n < len(behaviors):
-        behaviors = rng.sample(behaviors, args.n)
+    want = max(0, args.n - len(existing))
+    if want < len(fresh):
+        fresh = rng.sample(fresh, want)
+
+    rows = list(existing)
+    next_id = len(existing) + 1
+    for b in fresh:
+        rows.append({"id": f"{args.source}_{next_id:03d}", "source": args.source, "behavior": b})
+        next_id += 1
 
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     with open(args.out, "w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(["id", "source", "behavior"])
-        for i, b in enumerate(behaviors, 1):
-            writer.writerow([f"{args.source}_{i:03d}", args.source, b])
+        writer = csv.DictWriter(f, fieldnames=fields, restval="")
+        writer.writeheader()
+        writer.writerows(rows)
 
-    print(f"Wrote {len(behaviors)} behaviors to {args.out}")
+    print(f"Wrote {len(rows)} behaviors to {args.out} ({len(fresh)} new)")
 
 if __name__ == "__main__":
     main()

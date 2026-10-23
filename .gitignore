@@ -33,8 +33,7 @@ venv/
 *.pyo
 .DS_Store
 Thumbs.db
-analysis/dashboard/uploads/
-analysis/results/analysis/*
+analysis/
 !analysis/results/analysis/.gitkeep
 sota/ExquisiteNetV2/cifar-10-python
 *.out
@@ -66,3 +65,6 @@ templates/**/mutant*.sh
 src/mixt.sh 
 hostname.log
 notebook.md
+*.png
+*.csv
+jailbreak_card_*.md
