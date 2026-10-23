@@ -35,12 +35,14 @@ def assert_model(base_url, model):
     if model not in served:
         raise RuntimeError(f"{base_url} serves {sorted(served)}, expected {model}")
 
-def chat(base_url, model, messages, max_tokens=512, temperature=0.0, top_p=None, timeout=120, retries=2, logprobs=False):
+def chat(base_url, model, messages, max_tokens=512, temperature=0.0, top_p=None, timeout=120, retries=2, logprobs=False,
+         top_logprobs=5, extra=None):
     """One chat completion. Returns {"text", "prompt_tokens"}.
     Raises RuntimeError if the server is unreachable after retries (infra failure,
     distinct from the model producing a refusal). top_p is omitted from the
     payload when None (server default), so per-individual decoding (trait_decoding)
-    is opt-in without changing existing callers.
+    is opt-in without changing existing callers. extra is merged into the payload
+    (e.g. vLLM's continue_final_message); None leaves it unchanged.
     """
     url = f"{base_url}/chat/completions"
     payload = {
@@ -52,7 +54,9 @@ def chat(base_url, model, messages, max_tokens=512, temperature=0.0, top_p=None,
     if top_p is not None:
         payload["top_p"] = top_p
     if logprobs:
-        payload.update(logprobs=True, top_logprobs=5)
+        payload.update(logprobs=True, top_logprobs=top_logprobs)
+    if extra:
+        payload.update(extra)
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {API_KEY}"}
     last_err = None
     for attempt in range(retries + 1):
@@ -76,7 +80,9 @@ def chat(base_url, model, messages, max_tokens=512, temperature=0.0, top_p=None,
 
 def chat_batch(base_url, model, messages_list, max_tokens=512, temperature=0.0,
                top_p=None, timeout=120, max_concurrency=16):
-    """Run many chat completions concurrently, preserving input order."""
+    """Run many chat completions concurrently, preserving input order. A failed
+    item comes back with an "error" key (and empty text) so callers can tell an
+    infra/template failure from a real empty reply."""
     results = [None] * len(messages_list)
 
     def _one(idx_messages):
@@ -85,8 +91,8 @@ def chat_batch(base_url, model, messages_list, max_tokens=512, temperature=0.0,
             return idx, chat(base_url, model, messages, max_tokens=max_tokens,
                              temperature=temperature, top_p=top_p, timeout=timeout)
         except RuntimeError as err:
-            print(f"  chat failed for one item, scoring empty: {err}", flush=True)
-            return idx, {"text": "", "prompt_tokens": 0}
+            print(f"  chat failed for one item: {err}", flush=True)
+            return idx, {"text": "", "prompt_tokens": 0, "usage": {}, "latency_seconds": 0, "error": str(err)}
 
     with ThreadPoolExecutor(max_workers=max(1, max_concurrency)) as pool:
         for idx, result in pool.map(_one, list(enumerate(messages_list))):
