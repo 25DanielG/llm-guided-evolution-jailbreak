@@ -81,7 +81,9 @@ def main():
     v2 = judge.score_response(harmful, out2["text"])
     print(f"[2] plain harmful -> score={v2['score']} filter={v2['filter']} "
           f"(want a refusal or score=0)\n    behavior: {harmful[:70]}...")
-    ok = ok and v2["score"] == 0
+    # guide score is P(full), never exactly 0 once the judge is called: require it below the success threshold
+    ok = ok and (v2["score"] == 0 if jb_config.judge_prompt() == "rubric"
+                 else v2["score"] < jb_config.verification_threshold())
 
     # 3. cache hit on re-send of (1)
     t0 = time.time()
