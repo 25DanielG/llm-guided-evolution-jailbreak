@@ -104,6 +104,22 @@ def _apply_ask_template(text, ask):
     return f"{text}\n\n{ask}"
 
 
+def _alternate_turns(turns):
+    """Repair prior turns so roles strictly alternate user/assistant starting
+    with user. Chat templates (Mistral's, for one) reject anything else, which
+    zeroed whole genes. Leading assistant turns are dropped; consecutive
+    same-role turns are merged so no text is lost."""
+    fixed = []
+    for role, content in turns:
+        if not fixed and role != "user":
+            continue
+        if fixed and fixed[-1][0] == role:
+            fixed[-1] = (role, f"{fixed[-1][1]}\n\n{content}")
+        else:
+            fixed.append((role, content))
+    return fixed
+
+
 def render(tag_text_by_trait, behavior):
     """Deterministic, pure-Python tag -> (messages, decoding_overrides) renderer.
     tag_text_by_trait: {trait_name: raw segment text}. Never raises: any
@@ -164,6 +180,11 @@ def render(tag_text_by_trait, behavior):
             decoding["top_p"] = max(0.0, min(1.0, float(decoding_attrs["top_p"])))
     except (TypeError, ValueError):
         decoding = {}
+
+    prior_turns = _alternate_turns(prior_turns)
+    if prior_turns and prior_turns[-1][0] == "user":
+        # the ask is the next user message; fold a dangling user turn into it
+        ask = f"{prior_turns.pop()[1]}\n\n{ask}"
 
     messages = []
     system_text = " ".join(p.strip() for p in system_parts if p and p.strip())

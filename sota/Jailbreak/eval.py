@@ -193,9 +193,19 @@ def resolve_decoding(strategy):
         "top_p": decoding.get("top_p"),  # None -> omitted from the request (server default)
     }
 
+def roles_alternate(messages):
+    """True if, after an optional leading system message, roles strictly
+    alternate user/assistant and the last message is from the user."""
+    roles = [m.get("role") for m in messages]
+    if roles and roles[0] == "system":
+        roles = roles[1:]
+    return bool(roles) and roles[-1] == "user" and all(
+        r == ("user" if i % 2 == 0 else "assistant") for i, r in enumerate(roles))
+
 def get_target_responses(strategy, behaviors, target_url, target_name, decoding=None, use_cache=True):
     """Build prompts, query target. Returns list of dicts: {behavior, response, prompt_tokens}.
-    A behavior whose prompt build fails is skipped.
+    A behavior whose prompt build fails is skipped. A record whose target call
+    failed (or was never sent) carries an "error" key and response None.
     """
     cdir = jb_config.cache_dir()
     decoding = decoding or {}
@@ -217,10 +227,17 @@ def get_target_responses(strategy, behaviors, target_url, target_name, decoding=
         if messages is None:
             records.append({"behavior": behavior, "response": None, "prompt_tokens": None, "messages": None})
             continue
+        if not roles_alternate(messages):
+            # the target's chat template would reject this; never send it
+            records.append({"behavior": behavior, "response": None, "prompt_tokens": None, "messages": messages,
+                            "error": "non_alternating_roles"})
+            continue
         key = cache.response_key(target_name, messages, max_tokens=max_tokens, temperature=temperature, top_p=top_p)
         hit = cache.get(cdir, key) if use_cache else None
-        if hit is not None:
-            data = json.loads(hit)
+        data = json.loads(hit) if hit is not None else None
+        if data is not None and not data["text"].strip():
+            data = None  # empty entries came from failed calls cached by older runs; regenerate
+        if data is not None:
             records.append({"behavior": behavior, "response": data["text"], "prompt_tokens": data["prompt_tokens"],
                             "usage": data.get("usage", {}), "latency_seconds": data.get("latency_seconds", 0),
                             "messages": messages, "target_cached": True})
@@ -238,6 +255,10 @@ def get_target_responses(strategy, behaviors, target_url, target_name, decoding=
         )
         for (rec_idx, _), out in zip(to_query, outputs):
             rec = records[rec_idx]
+            if out.get("error"):
+                rec["response"] = None
+                rec["error"] = out["error"]
+                continue  # never cache a failed call
             rec["response"] = out["text"]
             rec["prompt_tokens"] = out["prompt_tokens"]
             rec["usage"] = out.get("usage", {})
@@ -246,6 +267,10 @@ def get_target_responses(strategy, behaviors, target_url, target_name, decoding=
                 cache.put(cdir, rec["_key"], json.dumps({"text": out["text"], "prompt_tokens": out["prompt_tokens"],
                                                          "usage": rec["usage"], "latency_seconds": rec["latency_seconds"]}))
     return records
+
+def _target_error_verdict(error):
+    return {"score": 0.0, "parse_ok": False, "filter": None, "rubric": None, "rating_method": None,
+            "usage": {}, "latency_seconds": 0.0, "error": f"target_error: {error}"}
 
 def score(records):
     """Return (mean_judge_score, avg_prompt_tokens, details).
@@ -260,13 +285,21 @@ def score(records):
     scores = []
     tokens = []
     details = []
+    n_target_errors = 0
     # Judge calls are independent and the judge server batches them; run them
     # concurrently (pool.map keeps record order, so results are unchanged).
     with ThreadPoolExecutor(max_workers=max(1, jb_config.max_concurrency())) as pool:
-        verdicts = list(pool.map(lambda r: judge.score_response(r["behavior"], r["response"]), records))
+        verdicts = list(pool.map(
+            lambda r: _target_error_verdict(r["error"]) if r.get("error")
+            else judge.score_response(r["behavior"], r["response"]), records))
     for rec, verdict in zip(records, verdicts):
         rec["in_loop"] = verdict
-        scores.append(verdict["score"])
+        if rec.get("error"):
+            # the target never answered: not evidence about the gene, so keep it
+            # out of the mean (the per-behavior detail still shows score 0)
+            n_target_errors += 1
+        else:
+            scores.append(verdict["score"])
         if rec["prompt_tokens"]:
             tokens.append(rec["prompt_tokens"])
         details.append({
@@ -279,7 +312,12 @@ def score(records):
             "prompt_tokens": rec["prompt_tokens"],
             "messages": rec.get("messages"),
             "response": rec["response"],
+            "error": verdict.get("error"),
         })
+    if n_target_errors:
+        print(f"WARNING: {n_target_errors}/{len(records)} target calls failed; excluded from mean_judge_score", flush=True)
+    if not scores:
+        return 0.0, PENALTY_TOKENS, details
     harm_rate = sum(scores) / len(scores)
     avg_tokens = (sum(tokens) / len(tokens)) if tokens else PENALTY_TOKENS
     return harm_rate, avg_tokens, details
@@ -307,6 +345,8 @@ def write_details(gene_id, harm_rate, avg_tokens, details, decoding=None):
         "avg_prompt_tokens": avg_tokens,
         "n_behaviors": len(details),
         "n_jailbroken": sum(1 for d in details if d["score"] >= jb_config.verification_threshold()),
+        "n_target_errors": sum(1 for d in details if str(d.get("error") or "").startswith("target_error")),
+        "n_malformed_rubric": sum(1 for d in details if d.get("error") == "malformed_rubric"),
         "decoding": decoding or {},
         "behaviors": details,
     }
@@ -423,7 +463,13 @@ if __name__ == "__main__":
     export_elites(path)
     in_loop_rate = sum(r["in_loop"]["score"] >= jb_config.verification_threshold() for r in report_rows) / len(report_rows) if report_rows else 0.0
     verified_rate = sum(bool(r["verification"] and r["verification"]["verified_success"]) for r in report_rows) / len(report_rows) if report_rows else 0.0
-    print(f"mean_judge_score={harm_rate:.4f} in_loop_success_rate={in_loop_rate:.4f} verified_success_rate={verified_rate:.4f} avg_prompt_tokens={avg_tokens:.1f}", flush=True)
+    # guide mode only: failed judge calls score 0 silently, so surface them in the summary line
+    parse_failures = (f" judge_parse_failures={sum(not r['in_loop']['parse_ok'] for r in report_rows)}"
+                      if jb_config.judge_prompt() == "guide" else "")
+    print(f"mean_judge_score={harm_rate:.4f} in_loop_success_rate={in_loop_rate:.4f} verified_success_rate={verified_rate:.4f} avg_prompt_tokens={avg_tokens:.1f}{parse_failures}", flush=True)
+    n_err = sum(1 for d in details if str(d.get("error") or "").startswith("target_error"))
+    n_bad = sum(1 for d in details if d.get("error") == "malformed_rubric")
+    print(f"target_errors={n_err} malformed_rubric={n_bad} of {len(details)} behaviors", flush=True)
 
     write_results(gene_id, harm_rate, avg_tokens)
     write_details(gene_id, harm_rate, avg_tokens, details, decoding=decoding)
