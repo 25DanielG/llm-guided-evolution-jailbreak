@@ -1,7 +1,16 @@
 """Slide-ready figures for the judge validation of one run (post-hoc; never part of the evolution loop).
     python3 -I plot_validation.py --metrics validation_metrics.json --key key.csv --labels labels.csv
         --population reporting.csv [--heldout heldout_840.json] [--run RUN_ID CANDIDATES_JSONL REPORTING_CSV ...]
-        --out-dir figures
+        [--extra-score NAME=SOURCE ...] [--model-prompt MODEL {rubric,guide} SOURCE ...]
+        [--replay MODEL {rubric,guide} SOURCE ...] --out-dir figures
+SOURCE is a per-item score: PATH:COLUMN of a CSV keyed by item_id (e.g. probs.csv:p_full), or a key score column
+(inloop_score, harmbench_p_yes). --extra-score adds a '+ guide' judge's P(full) curve to roc.png (NAME = llama70b,
+gemma27b or mixtral8x7b, for its color). --model-prompt, given for every MODEL with both prompts, draws
+model_prompt.png: weighted ROC AUC, its paired rubric -> guide change and balanced accuracy at score >= 0.5 per
+judge model x prompt, e.g.
+    --model-prompt Llama-3.3-70B rubric inloop_score --model-prompt Llama-3.3-70B guide llama70b_guide_probs.csv:p_full
+--replay quotes a re-run of one of those cells in model_prompt.png's footnote (e.g. a fresh replay of logged scores).
+A SOURCE CSV with a parse_ok column has its unparsed rows scored 0 counted in that footnote.
 Figures and figure_data.json carry only ids, labels, generations, counts and rates; response and behavior text is
 hashed into item_ids and never written.
 """
@@ -27,7 +36,7 @@ from matplotlib.colors import to_rgb  # noqa: E402
 from matplotlib.legend_handler import HandlerTuple  # noqa: E402
 from matplotlib.lines import Line2D  # noqa: E402
 from matplotlib.patches import Rectangle  # noqa: E402
-from matplotlib.ticker import PercentFormatter  # noqa: E402
+from matplotlib.ticker import FuncFormatter, PercentFormatter  # noqa: E402
 from matplotlib.transforms import blended_transform_factory, offset_copy  # noqa: E402
 
 csv.field_size_limit(10 ** 9)
@@ -42,6 +51,10 @@ JUDGES = {"inloop_yes": ("In-loop judge", "#2a78d6", "o"),
           "gemma27b": ("Gemma-2-27B + guide", "#898781", "v"),
           "mixtral8x7b": ("Mixtral-8x7B + guide", "#52514e", "P")}
 GUIDE_JUDGES = ("llama70b", "gemma27b", "mixtral8x7b")
+# model_prompt.png colors the prompt: rubric = the in-loop judge's blue, guide = Llama-3.3-70B + guide's green. The
+# model whose rows are those two judges keeps their filled marks; other models are hollow.
+PROMPTS = {"rubric": JUDGES["inloop_yes"][1:], "guide": JUDGES["llama70b"][1:]}
+ROLES = {"inloop_score": "this run's in-loop judge", "Llama-3.1-8B + rubric": "jb_strat_base1/2 in-loop judge"}
 DEFINITIONS = {"primary": "Success = full answer", "sensitivity": "Success = partial or full answer"}
 HUMAN, TEAM = "#52514e", "#6250d6"
 INK, SECONDARY, MUTED, GRID, AXIS = "#0b0b0b", "#52514e", "#898781", "#e1e0d9", "#c3c2b7"
@@ -155,6 +168,79 @@ def roc_points(rows):
     return points, sum((x1 - x0) * (y0 + y1) / 2 for (x0, y0), (x1, y1) in zip(points, points[1:]))
 
 
+def add_score(items, name, source):
+    """item[name] = the item's score from SOURCE: a key score column, or PATH:COLUMN of a CSV keyed by item_id.
+    Returns how many labeled items the CSV marks parse_ok = 0 and scores 0 (an unparsed judge reply counted as no)."""
+    if source in analyze_labels.SCORES:
+        scores, unparsed = {item["item_id"]: item[source] for item in items}, set()
+    else:
+        path, _, column = source.rpartition(":")
+        rows = analyze_labels.read_csv(path, ("item_id", column))
+        scores = {row["item_id"].strip(): analyze_labels.parse_float(row[column]) for row in rows}
+        unparsed = {row["item_id"].strip() for row in rows if (row.get("parse_ok") or "1").strip() == "0"}
+    missing = [item["item_id"] for item in items if item["item_id"] not in scores]
+    if missing:
+        raise ValueError(f"{source}: {len(missing)} labeled item_ids have no row (e.g. {missing[:3]})")
+    for item in items:
+        item[name] = scores[item["item_id"]]
+    return sum(item["item_id"] in unparsed and item[name] == 0 for item in items)
+
+
+def add_above_cutoff(items, score):
+    """item[score + '_above_cutoff'] = the score where it says yes (>= THRESHOLD), else None, so its AUC ranks only the
+    responses the judge flags."""
+    for item in items:
+        value = item[score]
+        item[f"{score}_above_cutoff"] = value if value is not None and value >= THRESHOLD else None
+
+
+def score_metrics(items, score, success):
+    """Weighted AUC of one score against the human label, plus its yes/no split at THRESHOLD (score >= 0.5 = yes);
+    yes and at_cutoff are unweighted counts of yes calls and of scores exactly at THRESHOLD."""
+    rows = [(item[score], item["label"] in success, item["weight"]) for item in items if item[score] is not None]
+    weighted = {name: sum(w for s, h, w in rows if (int(s >= THRESHOLD), h) == cell)
+                for name, cell in analyze_labels.CELLS.items()}
+    cut = analyze_labels.confusion_metrics(**weighted)
+    return {"n": len(rows), "auc": analyze_labels.weighted_auc(rows),
+            **{metric: cut[metric] for metric in ("balanced_accuracy", "fpr", "recall")},
+            "yes": sum(s >= THRESHOLD for s, _, _ in rows), "at_cutoff": sum(s == THRESHOLD for s, _, _ in rows)}
+
+
+def bootstrap_scores(items, scores, success, reps=2000, seed=0):
+    """score_metrics per score with stratified-bootstrap 95% CIs for AUC and balanced accuracy -> (stats, draws).
+    The resamples are analyze_labels.add_intervals' (same strata, order and rng stream), so key scores reproduce
+    validation_metrics.json's AUC CIs, and every score shares each replicate, so differences can be paired."""
+    rng, strata, draws = random.Random(seed), {}, {score: [] for score in scores}
+    for item in items:
+        strata.setdefault((item["run_id"], item["stratum"]), []).append(item)
+    for _ in range(reps):
+        sample = [pick for key in sorted(strata) for pick in rng.choices(strata[key], k=len(strata[key]))]
+        for score in scores:
+            draws[score].append(score_metrics(sample, score, success))
+    stats = {score: score_metrics(items, score, success) for score in scores}
+    for score, metric in ((score, metric) for score in scores for metric in ("auc", "balanced_accuracy")):
+        stats[score][f"{metric}_ci95"] = analyze_labels.percentile_interval(
+            [draw[metric] for draw in draws[score] if draw[metric] is not None])
+    return stats, draws
+
+
+def paired_change(stats, draws, base, alt, metric="auc"):
+    """alt - base on the full sample, with a 95% CI from the shared bootstrap replicates."""
+    return {"change": stats[alt][metric] - stats[base][metric], "ci95": analyze_labels.percentile_interval(
+        [b[metric] - a[metric] for a, b in zip(draws[base], draws[alt]) if None not in (a[metric], b[metric])])}
+
+
+def guide_verdict(changes):
+    """{model: paired rubric -> guide AUC change} -> (models that clearly gain, all models in title order, title).
+    A gain is clear only when its whole 95% CI is above 0."""
+    helped = [model for model, change in changes.items() if change["ci95"][0] > 0]
+    models = helped + [model for model in changes if model not in helped]
+    title = ("No judge model clearly gains from the labeling guide" if not helped else
+             f"The labeling guide helps {listing(helped)}" if len(helped) == len(models) else
+             f"Only {listing(helped)} clearly gain{'s' * (len(helped) == 1)} from the labeling guide")
+    return helped, models, title
+
+
 def row_shares(matrix):
     return [[cell / (sum(row) or 1) for cell in row] for row in matrix]
 
@@ -224,6 +310,10 @@ def ink_on(fill):
 
 def pct(value, ci):
     return f"{value:.0%} [{ci[0] * 100:.0f}–{ci[1] * 100:.0f}]"
+
+
+def listing(names):
+    return " and ".join(filter(None, (", ".join(names[:-1]), names[-1])))
 
 
 def two_lines(name):
@@ -503,33 +593,66 @@ def plot_generation_gap(run_id, rates, skipped, out_dir):
             "excluded_share_by_generation": shares}
 
 
-def plot_roc(items, metrics, out_dir, note):
+def plot_roc(items, metrics, stats, extras, out_dir, note):
+    """extras = {judge: SOURCE} of '+ guide' judges whose P(full) is drawn next to the key's two scores."""
     judges = metrics["pooled"]["primary"]["judges"]
-    fig = figure("How well do the raw scores rank real jailbreaks?",
-                 "Weighted ROC against the human label (success = full answer)",
-                 wrap(note + ".", "Brackets: 95% stratified-bootstrap CI. Open LLM judges output labels, not "
-                      "scores, so they have no ROC curve."))
-    ax = fig.add_axes([0.085, 0.24, 0.47, 0.57])
-    ax.plot([0, 1], [0, 1], color=AXIS, lw=1.5, label="Chance (AUC 0.50)")
-    data, cutoffs = {}, []
-    for score, judge in (("inloop_score", "inloop_yes"), ("harmbench_p_yes", "harmbench_score")):
-        name, color, marker = JUDGES[judge]
+    curves, data, exact = [], {}, True
+    for score, judge in (("inloop_score", "inloop_yes"), ("harmbench_p_yes", "harmbench_score"),
+                         *((judge, judge) for judge in extras)):
         rows = [(item[score], item["label"] == "full", item["weight"]) for item in items if item[score] is not None]
         points, auc = roc_points(rows)
-        same(auc, metrics["pooled"]["primary"]["auc"][score]["auc"], f"{score} AUC")
-        low, high = metrics["pooled"]["primary"]["auc"][score]["ci95"]["auc"]
-        ax.plot(*zip(*points), color=color, lw=3, solid_joinstyle="round", zorder=3,
-                label=f"{name}\nAUC {auc:.2f} [95% CI {low:.2f}–{high:.2f}]")
-        cut = judges[judge]["metrics"]
+        (low, high), split = stats[score]["auc_ci95"], stats[score]
+        same(auc, split["auc"], f"{score} AUC")
+        cut = judges[judge]["metrics"] if judge in judges else split  # the yes/no the other charts use
+        if judge in analyze_labels.JUDGES:  # the key's verdicts are its scores' split at the cutoff
+            same(auc, metrics["pooled"]["primary"]["auc"][score]["auc"], f"{score} AUC")
+            same(split["fpr"], cut["fpr"], f"{judge} FPR at the cutoff")
+            same(split["recall"], cut["recall"], f"{judge} recall at the cutoff")
+        exact &= all(math.isclose(split[metric], cut[metric]) for metric in ("fpr", "recall"))
+        curves.append((auc, score, judge, points, cut))
+        data[score] = {"auc": auc, "auc_ci95": [low, high], "points_fpr_tpr": points,
+                       "yes_no_cutoff_fpr_tpr": [cut["fpr"], cut["recall"]]}
+        if judge in extras:
+            data[score].update(source=extras[judge], score="P(full)",
+                               p_full_at_cutoff_fpr_tpr=[split["fpr"], split["recall"]])
+        else:
+            above = stats[f"{score}_above_cutoff"]
+            data[score].update(auc_above_cutoff=above["auc"], auc_above_cutoff_ci95=above["auc_ci95"])
+    inloop, above = stats["inloop_score"], stats["inloop_score_above_cutoff"]
+    title = (f"The in-loop score ranks real jailbreaks {'barely' if inloop['auc'] > 0.5 else 'no'} better than chance"
+             if inloop["auc_ci95"][0] <= 0.5 else f"{JUDGES[max(curves)[2]][0]} ranks real jailbreaks best")
+    unscored = [JUDGES[judge][0] for judge in GUIDE_JUDGES if judge not in extras]
+    fig = figure(title, "Jailbreaks caught vs false alarms as each score's cutoff slides (success = full answer)",
+                 wrap(note + ". Brackets: 95% stratified-bootstrap CI."
+                      + (f" {listing([JUDGES[judge][0] for judge in extras])}: P(full) from token logprobs."
+                         if extras else "")
+                      + f" Not drawn: {f'{listing(unscored)} (labels only); ' if unscored else ''}HarmBench (model "
+                        "card), the same classifier reworded."))
+    ax = fig.add_axes([0.085, 0.265, 0.545 * FIGSIZE[1] / FIGSIZE[0], 0.545])  # square, so chance is the diagonal
+    chance, = ax.plot([0, 1], [0, 1], color=AXIS, lw=1.5)
+    handles, labels, cutoffs = [], [], []
+    for auc, score, judge, points, cut in sorted(curves, key=lambda curve: -curve[0]):  # legend in AUC order
+        name, color, marker = JUDGES[judge]
+        low, high = data[score]["auc_ci95"]
+        handles += ax.plot(*zip(*points), color=color, lw=3, solid_joinstyle="round", zorder=3)
+        labels.append(f"{name}: AUC {auc:.2f} [{low:.2f}–{high:.2f}]")
         ax.plot(cut["fpr"], cut["recall"], marker=marker, ms=14, color=color, mec="white", mew=2, zorder=4)
         cutoffs.append(Line2D([], [], marker=marker, ms=12, color=color, mec="white", mew=2, lw=0))
-        _, above = roc_points([row for row in rows if row[0] >= THRESHOLD])
-        data[score] = {"auc": auc, "auc_ci95": [low, high], "points_fpr_tpr": points,
-                       "yes_no_cutoff_fpr_tpr": [cut["fpr"], cut["recall"]], "auc_above_cutoff": above}
-    ax.annotate("Above the cutoff, a higher in-loop\nscore is no more likely to be\na real jailbreak",
-                (0.25, 0.25), xytext=(0.97, 0.04), ha="right", va="bottom", fontsize=15, color=SECONDARY,
-                linespacing=1.3, arrowprops={"arrowstyle": "->", "color": SECONDARY, "lw": 1.5,
-                                             "shrinkA": 4, "shrinkB": 6})
+    top = max(item["inloop_score"] for item in items if item["inloop_score"] is not None)
+    fpr, tpr = data["inloop_score"]["points_fpr_tpr"][1]
+    data["inloop_score"]["top_score"] = {"score": top, "fpr": fpr, "tpr": tpr}
+    accuracy = judges["inloop_yes"]["metrics"]["balanced_accuracy"]
+    ax.annotate(textwrap.fill(f"The in-loop judge gives its top score ({top:.1f}) to {tpr:.0%} of real jailbreaks and "
+                              f"{fpr:.0%} of non-jailbreaks" + (": above its cutoff it ranks no better than chance"
+                                                                if above["auc_ci95"][0] <= 0.5 else "")
+                              + (f", so its AUC ({inloop['auc']:.2f}) is below its yes/no balanced accuracy "
+                                 f"({accuracy:.2f})." if inloop["auc"] < accuracy else "."), 60),
+                (fpr / 2, tpr / 2), xytext=(0.45, 0.37), textcoords="figure fraction", ha="left", va="top",
+                fontsize=15, color=SECONDARY, linespacing=1.35,
+                arrowprops={"arrowstyle": "->", "color": SECONDARY, "lw": 1.5, "relpos": (0, 0.5), "shrinkA": 8,
+                            "shrinkB": 4})
+    fig.text(0.45, 0.47, "AUC = chance a real jailbreak scores above a non-jailbreak\n(1.0 = perfect, 0.5 = random).",
+             fontsize=15, color=SECONDARY, va="top", linespacing=1.35)
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1.01)
     ax.xaxis.set_major_formatter(PercentFormatter(1.0, decimals=0))
@@ -537,18 +660,132 @@ def plot_roc(items, metrics, out_dir, note):
     ax.set_xlabel("False positive rate (false alarms)")
     ax.set_ylabel("True positive rate (jailbreaks caught)")
     tidy(ax, "both")
-    handles, labels = ax.get_legend_handles_labels()
-    ax.legend(handles + [tuple(cutoffs)], labels + ["Yes/no cutoff used\nin the other charts"],
-              handler_map={tuple: HandlerTuple(ndivide=None, pad=0.6)}, loc="upper left",
-              bbox_to_anchor=(1.05, 1.02), frameon=False, labelspacing=0.6, fontsize=16)
-    inloop = judges["inloop_yes"]["metrics"]["balanced_accuracy"]
-    fig.text(0.6, 0.2, "\n".join(textwrap.wrap(
-        "AUC = chance that a real jailbreak gets a higher score than a non-jailbreak (1.0 = perfect, 0.5 = random). "
-        f"The in-loop AUC ({data['inloop_score']['auc']:.2f}) is below its balanced accuracy at the cutoff "
-        f"({inloop:.2f}) because only its yes/no split carries signal.", 44)), fontsize=15, color=SECONDARY,
-        va="bottom", linespacing=1.35)
-    data["inloop_balanced_accuracy_at_cutoff"] = inloop
+    ax.legend(handles + [chance, tuple(cutoffs)], labels + ["Chance: AUC 0.50", "Yes/no call" + (
+        " (score ≥ 0.5),\nas in the other charts" if exact else " used\nin the other charts")],
+        handler_map={tuple: HandlerTuple(ndivide=None, pad=0.6)}, loc="upper left", bbox_to_anchor=(0.45, 0.83),
+        bbox_transform=fig.transFigure, frameon=False, labelspacing=0.55, fontsize=18, handlelength=1.8)
+    data.update(inloop_balanced_accuracy_at_cutoff=accuracy, title=title)
     save(fig, out_dir, "roc.png")
+    return data
+
+
+def marks(color, filled):
+    """Marker style: filled = drawn as on the other slides; hollow (white fill) = a judge model shown only here."""
+    return {"color": color, "mfc": color if filled else "white", "mec": "white" if filled else color,
+            "mew": 2 if filled else 2.5}
+
+
+def plot_model_prompt(items, cells, stats, draws, replays, unparsed, out_dir, note):
+    """cells = {(model, prompt): (name, SOURCE)} with both PROMPTS for every model; replays = {(model, prompt):
+    (name, SOURCE)} re-runs of a cell, quoted in the footnote; unparsed = {name: unparsed replies scored 0}."""
+    changes = {model: paired_change(stats, draws, cells[model, "rubric"][0], cells[model, "guide"][0])
+               for model in dict.fromkeys(model for model, _ in cells)}
+    helped, models, title = guide_verdict(changes)
+    # The model whose cells are the in-loop judge and Llama-3.3-70B + guide keeps their filled marks.
+    shown = {model for (model, _), (name, source) in cells.items()
+             if source == "inloop_score" or name == JUDGES["llama70b"][0]}
+    auc = {(model, prompt): stats[name]["auc"] for (model, prompt), (name, _) in cells.items()}
+    explained = []  # cells ranking below their own yes/no accuracy: where their top score goes
+    for (model, prompt), (name, _) in cells.items():
+        if stats[name]["auc"] < stats[name]["balanced_accuracy"]:
+            rows = [(item[name], item["label"] == "full", item["weight"]) for item in items if item[name] is not None]
+            fpr, tpr = roc_points(rows)[0][1]
+            explained.append(f"{name} ranks below its yes/no accuracy: its top score "
+                             f"({max(row[0] for row in rows):.1f}) goes to {tpr:.0%} of real jailbreaks and "
+                             f"{fpr:.0%} of non-jailbreaks.")
+    cutoff = [f"{name}: " + " and ".join(filter(None, (
+        f"{unparsed[name]} of {stats[name]['n']} replies did not parse (scored 0, no)" if unparsed[name] else "",
+        f"{stats[name]['at_cutoff']} scored exactly 0.5 (yes)" if stats[name]["at_cutoff"] else ""))) + "."
+        for name, _ in cells.values() if unparsed[name] or stats[name]["at_cutoff"]]
+    fig = figure(title, "Ranking real jailbreaks (AUC), rubric → guide: " + "; ".join(
+        f"{model} {auc[model, 'rubric']:.2f} → {auc[model, 'guide']:.2f}" for model in models) + ".",
+                 wrap(f"{note}. 95% CIs: stratified bootstrap, paired for changes. Guide score = P(full) from token "
+                      "logprobs; yes = P(full) ≥ 0.5, not the judge's own label. " + " ".join(
+                          explained + [f"Fresh replay of {cells[key][0]}: AUC {stats[name]['auc']:.2f}, "
+                                       f"balanced accuracy {stats[name]['balanced_accuracy']:.2f}."
+                                       for key, (name, _) in replays.items()] + cutoff)))
+    axes = fig.subplots(1, 3, sharey=True, gridspec_kw={"width_ratios": [1, 0.7, 1]})
+    fig.subplots_adjust(left=0.255, right=0.975, top=0.685, bottom=0.36, wspace=0.12)
+    rows = [(3 * i + j, model, prompt) for i, model in enumerate(models) for j, prompt in enumerate(PROMPTS)]
+    lows = [stats[name][f"{metric}_ci95"][0] for name, _ in cells.values() for metric in ("auc", "balanced_accuracy")]
+    xmin, annotated = min(0.4, math.floor(min(lows) * 10) / 10), []
+    for ax, (metric, heading, label) in zip(axes[::2], (("auc", "Ranking: ROC AUC", "ROC AUC"),
+                                                        ("balanced_accuracy", "Yes/no at score ≥ 0.5",
+                                                         "Balanced accuracy"))):
+        best = max(cells.values(), key=lambda cell: stats[cell[0]][metric])[0]
+        ax.axvline(0.5, color=MUTED, lw=1.5, zorder=1)
+        ax.text(0.505, -1.2, "chance", fontsize=15, color=SECONDARY, va="center")
+        for y, model, prompt in rows:
+            name, (color, marker) = cells[model, prompt][0], PROMPTS[prompt]
+            value, (low, high) = stats[name][metric], stats[name][f"{metric}_ci95"]
+            ax.plot([low, high], [y, y], color=color if model in shown else tint(color, 0.5), lw=3,
+                    solid_capstyle="round", zorder=2)
+            ax.plot(value, y, marker=marker, ms=13, zorder=3, **marks(color, model in shown))
+            ax.text(value, y - 0.24, f"{value:.2f}", ha="center", va="bottom", fontsize=15, zorder=4,
+                    color=INK if name == best else SECONDARY, fontweight="bold" if name == best else "normal",
+                    bbox={"boxstyle": "square,pad=0.05", "fc": "white", "ec": "none"})
+            if metric == "balanced_accuracy" and value < 0.5:  # below chance: the cutoff, not the ranking, is why
+                annotated.append(name)
+                ax.text(high + 0.025, y + 0.1, f"catches {stats[name]['recall']:.0%} of jailbreaks:\n"
+                        f"{'P(full)' if prompt == 'guide' else 'score'} ≥ 0.5 on {stats[name]['yes']} of "
+                        f"{stats[name]['n']}", ha="left", va="center", fontsize=15, color=SECONDARY, linespacing=1.25)
+        ax.set_title(heading, loc="left", pad=10)
+        ax.set_xlim(xmin, 1.0)
+        ax.set_xticks([round(xmin + k / 10, 1) for k in range(1, round((1 - xmin) * 10) + 1)])  # no tick at the seam
+        ax.set_xlabel(label)
+    ax = axes[1]  # the paired change, guide - rubric, one row per model at its group's center
+    ax.axvline(0, color=MUTED, lw=1.5, zorder=1)
+    ax.text(0.015, -1.2, "no change", fontsize=15, color=SECONDARY, va="center")
+    for i, model in enumerate(models):
+        change, (low, high) = changes[model]["change"], changes[model]["ci95"]
+        ax.plot([low, high], [3 * i + 0.5] * 2, color=SECONDARY if model in shown else tint(SECONDARY, 0.5), lw=3,
+                solid_capstyle="round", zorder=2)
+        ax.plot(change, 3 * i + 0.5, marker="o", ms=13, zorder=3, **marks(SECONDARY, model in shown))
+        ax.text(change, 3 * i + 0.26, f"{change:+.2f}".replace("-", "−"), ha="center", va="bottom", fontsize=15,
+                zorder=4, color=INK if model in helped else SECONDARY,
+                fontweight="bold" if model in helped else "normal",
+                bbox={"boxstyle": "square,pad=0.05", "fc": "white", "ec": "none"})
+    ends = [0.0] + [end for change in changes.values() for end in change["ci95"]]
+    low, high = min(ends) - 0.08, max(ends) + 0.08
+    ax.set_xlim(low, high)
+    ax.set_xticks([k / 5 for k in range(-5, 6) if low + 0.1 < k / 5 < high - 0.1])  # none at the seams
+    ax.xaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:+.1f}".replace("-", "−") if round(v, 6) else "0"))
+    ax.set_title("AUC change", loc="left", pad=10)
+    ax.set_xlabel("guide − rubric")
+    for ax in axes:
+        ax.set_ylim(rows[-1][0] + 0.8, -1.5)
+        tidy(ax, "x")
+        for i in range(1, len(models)):  # hairline between model groups
+            ax.axhline(3 * i - 1, color=AXIS, lw=1, zorder=1)
+    axes[0].set_yticks([])
+    labels = offset_copy(blended_transform_factory(axes[0].transAxes, axes[0].transData), fig, x=-10, units="points")
+    for y, model, prompt in rows:  # two-line labels: the name, then its role on the other slides
+        name, source = cells[model, prompt]
+        role = ROLES.get(source) or ROLES.get(name)
+        axes[0].text(0, y - 0.2 * bool(role), name, transform=labels, ha="right", va="center", fontsize=17, color=INK)
+        if role:
+            axes[0].text(0, y + 0.36, f"({role})", transform=labels, ha="right", va="center", fontsize=14,
+                         color=SECONDARY)
+    handle = lambda prompt, filled: Line2D([], [], marker=PROMPTS[prompt][1], ms=12, lw=0,
+                                           **marks(PROMPTS[prompt][0], filled))
+    hollow = [model for model in models if model not in shown]
+    entries = [((handle("rubric", True), handle("rubric", False)), "rubric (in-loop prompt)"),
+               ((handle("guide", True), handle("guide", False)), "human labeling guide"),
+               *([((handle("rubric", True), handle("guide", True)), listing([m for m in models if m in shown]))]
+                 if shown else []),
+               *([((handle("rubric", False), handle("guide", False)), listing(hollow))] if hollow else [])]
+    fig.legend([entry for entry, _ in entries], [text for _, text in entries], loc="center left", ncol=len(entries),
+               bbox_to_anchor=(0.028, 0.79), handler_map={tuple: HandlerTuple(ndivide=None, pad=0.4)},
+               frameon=False, fontsize=16, columnspacing=1.6, handletextpad=0.5)
+    data = {"cells": {name: {"model": model, "prompt": prompt, "source": source, **stats[name]}
+                      for (model, prompt), (name, source) in cells.items()},
+            "auc_change_rubric_to_guide": changes, "helped": helped, "row_order": models, "title": title,
+            "filled_models": sorted(shown), "below_chance_annotated": annotated, "rank_below_yes_no": explained,
+            "replays": {name: {"of": cells[key][0], "source": source, **stats[name]}
+                        for key, (name, source) in replays.items()},
+            "unparsed_scored_0": unparsed, "cutoff_notes": cutoff,
+            "row_roles": {name: ROLES.get(source) or ROLES.get(name) for name, source in cells.values()}}
+    save(fig, out_dir, "model_prompt.png")
     return data
 
 
@@ -626,7 +863,9 @@ def plot_table(rows, out_dir, note):
     return shown
 
 
-def write_readme(out_dir, runs):
+def write_readme(out_dir, runs, extras, model_prompt):
+    scores = ["the raw in-loop score", "HarmBench's P(yes)"] + [f"{JUDGES[judge][0]}'s P(full) (from token logprobs)"
+                                                                for judge in extras]
     lines = ["# Judge-validation figures", "",
              "Built by `sota/Jailbreak/plot_validation.py`; every plotted number is in `figure_data.json`. Rates "
              "against the human label are weighted to all responses in the run unless a figure says otherwise.", "",
@@ -646,9 +885,26 @@ def write_readme(out_dir, runs):
              "distinct responses. Right: in-loop vs team verification vs HarmBench over the final population's 840 "
              "candidate x behavior pairs (no human labels there). The two panels count different things; the "
              "footnote gives the per-attempt rates.",
-             "- `roc.png`: how well the raw in-loop score and HarmBench's P(yes) rank real jailbreaks above "
-             "non-jailbreaks (AUC with 95% CI; 1.0 perfect, 0.5 random). Above its cutoff the in-loop score does not "
-             "rank better than chance."]
+             f"- `roc.png`: how well {listing(scores)} rank real jailbreaks above non-jailbreaks (AUC with 95% CI; "
+             "1.0 perfect, 0.5 random), on a square plot so the diagonal is chance; the title is computed from the "
+             "in-loop AUC CI. The arrow marks the in-loop judge's top score, given to about as many real jailbreaks "
+             "as non-jailbreaks (`top_score`): above its cutoff it ranks no better than chance (`auc_above_cutoff` "
+             "with its CI), which is why its AUC is below its balanced accuracy. Not drawn: "
+             + listing([f"{JUDGES[judge][0]} (labels only)" for judge in GUIDE_JUDGES if judge not in extras]
+                       + ["HarmBench (model card) (the official classifier reworded)"]) + "."]
+    if model_prompt:
+        lines.append("- `model_prompt.png`: does a better prompt fix the in-loop judge? Llama-3.3-70B and "
+                     "Llama-3.1-8B, each with the team's in-loop rubric and with the human labeling guide (P(full) "
+                     "from token logprobs), scored by ROC AUC (left, main), the paired guide − rubric AUC change "
+                     "(middle) and balanced accuracy at score ≥ 0.5 (right), with 95% CIs. The title and row order "
+                     "come from the data (a gain counts only if its CI is above 0). Filled marks = the two judges as "
+                     "drawn on the other slides (Llama-3.3-70B + rubric is this run's in-loop judge, its logged "
+                     "scores); hollow = Llama-3.1-8B, whose + rubric row is the in-loop judge of jb_strat_base1 and "
+                     "jb_strat_base2 (`row_roles`), replayed. A balanced accuracy below 0.5 is annotated with its "
+                     "recall and yes count: Llama-3.1-8B rarely puts P(full) at 0.5 or more, so it almost never says "
+                     "yes. A guide judge's yes/no here is P(full) ≥ 0.5, not its own label as on the other slides. The "
+                     "footnote quotes a fresh replay of the logged in-loop scores and, per judge, unparsed rubric "
+                     "replies scored 0 and scores exactly at 0.5, which count as yes (`cutoff_notes`, `at_cutoff`).")
     for run_id in runs:
         lines.append(f"- `generation_gap_{run_id}.png`: per generation, the share of rows the in-loop judge calls a "
                      "jailbreak vs the share HarmBench does on the same rows; the shaded band is how much more often "
@@ -671,10 +927,26 @@ def main(argv=None):
     parser.add_argument("--heldout", help="final-population counts JSON (in_loop_yes, team_verified, ...)")
     parser.add_argument("--run", nargs=3, action="append", default=[],
                         metavar=("RUN_ID", "CANDIDATES_JSONL", "REPORTING_CSV"))
+    parser.add_argument("--extra-score", action="append", default=[], metavar="NAME=SOURCE",
+                        help=f"a '+ guide' judge's P(full) for roc.png; NAME in {', '.join(GUIDE_JUDGES)}")
+    parser.add_argument("--model-prompt", nargs=3, action="append", default=[],
+                        metavar=("MODEL", "PROMPT", "SOURCE"), help=f"PROMPT in {', '.join(PROMPTS)}")
+    parser.add_argument("--replay", nargs=3, action="append", default=[], metavar=("MODEL", "PROMPT", "SOURCE"),
+                        help="a re-run of one --model-prompt cell, quoted in model_prompt.png's footnote")
     parser.add_argument("--out-dir", required=True)
     parser.add_argument("--bootstrap", type=int, default=2000)
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args(argv)
+    extras = dict(spec.partition("=")[::2] for spec in args.extra_score)
+    if len(extras) < len(args.extra_score) or not all(n in GUIDE_JUDGES and s for n, s in extras.items()):
+        parser.error(f"--extra-score takes NAME=SOURCE with a unique NAME in {', '.join(GUIDE_JUDGES)}")
+    cells = {(model, prompt): (f"{model} + {prompt}", source) for model, prompt, source in args.model_prompt}
+    models = {model for model, _ in cells}
+    if len(cells) < len(args.model_prompt) or set(cells) != {(m, p) for m in models for p in PROMPTS}:
+        parser.error(f"--model-prompt needs each MODEL exactly once with each PROMPT ({', '.join(PROMPTS)})")
+    replays = {(model, prompt): (f"{model} + {prompt} (replay)", source) for model, prompt, source in args.replay}
+    if len(replays) < len(args.replay) or not set(replays) <= set(cells):
+        parser.error("--replay takes one MODEL PROMPT pair given to --model-prompt, at most once")
 
     metrics = json.loads(Path(args.metrics).read_text(encoding="utf-8"))
     items = load_items(args.key, args.labels, args.population)
@@ -732,13 +1004,29 @@ def main(argv=None):
                      "fix).")
     data["jailbreak_rate.png"] = {"panels": plot_rates(panels, out_dir, wrap(*notes)),
                                   "per_attempt": attempts[0] if len(attempts) == 1 else None}
-    data["roc.png"] = plot_roc(items, metrics, out_dir, note)
+    unparsed = {name: add_score(items, name, source) for name, source in [*extras.items(), *cells.values(),
+                                                                           *replays.values()]}
+    for score in analyze_labels.SCORES:
+        add_above_cutoff(items, score)
+    stats, draws = bootstrap_scores(items, [*analyze_labels.SCORES, *(f"{s}_above_cutoff" for s in
+                                                                      analyze_labels.SCORES),
+                                            *extras, *(name for name, _ in [*cells.values(), *replays.values()])],
+                                    {"full"}, args.bootstrap, args.seed)
+    if (args.bootstrap, args.seed) == (metrics["inputs"]["bootstrap"], metrics["inputs"]["seed"]):
+        for score in analyze_labels.SCORES:  # same resamples as analyze_labels, so the same AUC CIs
+            for end, logged in zip(stats[score]["auc_ci95"], metrics["pooled"]["primary"]["auc"][score]["ci95"]["auc"]):
+                same(end, logged, f"{score} AUC CI")
+    data["roc.png"] = plot_roc(items, metrics, stats, extras, out_dir, note)
+    if cells:
+        data["model_prompt.png"] = plot_model_prompt(items, cells, stats, draws, replays,
+                                                     {name: unparsed[name] for name, _ in cells.values()}, out_dir,
+                                                     note)
     rows = table_rows(metrics)
     write_tables(rows, out_dir, note)
     data["metrics_table.png"] = plot_table(rows, out_dir, note)
     data["metrics_table.csv"] = rows
     (out_dir / "figure_data.json").write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    write_readme(out_dir, [run_id for run_id, _, _ in args.run])
+    write_readme(out_dir, [run_id for run_id, _, _ in args.run], extras, bool(cells))
     print(f"human_full={human['primary']['estimate']:.4f} ci={human['primary']['ci95']} "
           f"inloop_yes={run['inloop_yes']}/{run['n']} harmbench_yes={run['harmbench_yes']}/{run['n']} "
           f"runs={len(args.run)} wrote={out_dir}", flush=True)

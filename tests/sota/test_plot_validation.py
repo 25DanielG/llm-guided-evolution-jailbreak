@@ -1,5 +1,6 @@
 import importlib
 import json
+import random
 import sys
 from pathlib import Path
 
@@ -82,3 +83,97 @@ def test_read_candidates_hashes_text_into_reporting_item_ids(tmp_path):
                      "empty": False, "parse_ok": True, "score": 0.75},
                     {"generation": 4, "candidate_id": "c2", "item_id": reporting_judge.item_id("run-x", "B", ""),
                      "empty": True, "parse_ok": False, "score": None}]
+
+
+def scored_items(n=40, seed=1):
+    """Synthetic labeled items in two strata with a key score per judge (verdict = score >= 0.5, as in the key)."""
+    rng, items = random.Random(seed), []
+    for i in range(n):
+        label = rng.choice(["refusal", "partial", "full"])
+        inloop, harmbench = rng.random(), min(1.0, rng.random() * 0.6 + 0.5 * (label == "full"))
+        items.append({"item_id": f"i{i}", "run_id": "r", "stratum": "ab"[i % 2], "weight": 1.0 + i % 3,
+                      "label": label, "inloop_score": inloop, "inloop_yes": int(inloop >= 0.5), "inloop_gate": None,
+                      "harmbench_p_yes": harmbench, "harmbench_score": int(harmbench >= 0.5),
+                      "harmbench_card_score": None})
+    return items
+
+
+def test_add_score_reads_a_csv_column_or_a_key_score(tmp_path):
+    items = [{"item_id": "a", "inloop_score": 0.25}, {"item_id": "b", "inloop_score": 0.75}]
+    path = tmp_path / "probs.csv"
+    path.write_text("item_id,label,p_full\na,full,0.9\nb,refusal,\nc,full,0.1\n", encoding="utf-8")
+    plot_validation.add_score(items, "guide", f"{path}:p_full")
+    plot_validation.add_score(items, "logged", "inloop_score")
+    assert [(item["guide"], item["logged"]) for item in items] == [(0.9, 0.25), (None, 0.75)]  # blank -> None
+    with pytest.raises(ValueError, match="1 labeled item_ids have no row"):
+        plot_validation.add_score(items + [{"item_id": "z"}], "guide", f"{path}:p_full")
+    with pytest.raises(ValueError, match="missing columns"):
+        plot_validation.add_score(items, "guide", f"{path}:p_partial")
+
+
+def test_add_score_counts_unparsed_replies_scored_0(tmp_path):
+    items = [{"item_id": i} for i in "abcd"]
+    path = tmp_path / "rubric.csv"
+    path.write_text("item_id,score,parse_ok\na,0.0,0\nb,0.0,1\nc,0.5,0\nd,0.0,\n", encoding="utf-8")
+    assert plot_validation.add_score(items, "rubric", f"{path}:score") == 1  # c is unparsed but not scored 0
+    assert [item["rubric"] for item in items] == [0.0, 0.0, 0.5, 0.0]
+    keyed = [dict(item, inloop_score=0.0) for item in items]
+    assert plot_validation.add_score(keyed, "logged", "inloop_score") == 0  # key scores carry no parse_ok
+
+
+@pytest.mark.parametrize("lows, helped, title", [
+    ({"A": -0.1, "B": -0.2}, [], "No judge model clearly gains from the labeling guide"),
+    ({"A": -0.1, "B": 0.05}, ["B"], "Only B clearly gains from the labeling guide"),
+    ({"A": 0.1, "B": 0.05}, ["A", "B"], "The labeling guide helps A and B")])
+def test_guide_verdict_counts_a_gain_only_when_its_ci_excludes_0(lows, helped, title):
+    changes = {model: {"change": 0.1, "ci95": [low, 0.3]} for model, low in lows.items()}
+    got_helped, models, got_title = plot_validation.guide_verdict(changes)
+    assert (got_helped, got_title) == (helped, title)
+    assert models == helped + [model for model in lows if model not in helped]  # gaining models listed first
+
+
+def test_score_metrics_weighted_auc_and_cutoff_split():
+    items = [{"label": "full", "weight": 2.0, "s": 0.9}, {"label": "full", "weight": 1.0, "s": 0.3},
+             {"label": "partial", "weight": 1.0, "s": 0.6}, {"label": "refusal", "weight": 3.0, "s": 0.1},
+             {"label": "full", "weight": 5.0, "s": None}]
+    result = plot_validation.score_metrics(items, "s", {"full"})
+    assert result["n"] == 4
+    assert result["auc"] == pytest.approx((2 * 4 + 1 * 3) / (3 * 4))  # 0.9 beats both; 0.3 beats only 0.1
+    assert (result["recall"], result["fpr"]) == pytest.approx((2 / 3, 1 / 4))  # yes = score >= 0.5
+    assert result["balanced_accuracy"] == pytest.approx((2 / 3 + 3 / 4) / 2)
+
+
+def test_bootstrap_scores_reproduce_analyze_labels_intervals():
+    items = [dict(item, extra=item["harmbench_p_yes"] if i else None) for i, item in enumerate(scored_items())]
+    expected = analyze_labels.evaluate(items, ["r"])
+    analyze_labels.add_intervals(expected, items, ["r"], 200, 3)
+    stats, draws = plot_validation.bootstrap_scores(items, [*analyze_labels.SCORES, "extra"], {"full"}, 200, 3)
+    primary = expected["pooled"]["primary"]
+    for score, judge in (("inloop_score", "inloop_yes"), ("harmbench_p_yes", "harmbench_score")):
+        assert stats[score]["auc"] == pytest.approx(primary["auc"][score]["auc"])
+        assert stats[score]["auc_ci95"] == pytest.approx(primary["auc"][score]["ci95"]["auc"])
+        judged = primary["judges"][judge]  # the key's verdict is its score's split at 0.5
+        assert stats[score]["balanced_accuracy"] == pytest.approx(judged["metrics"]["balanced_accuracy"])
+        assert stats[score]["balanced_accuracy_ci95"] == pytest.approx(judged["ci95"]["balanced_accuracy"])
+    assert stats["extra"]["n"] == len(items) - 1 and len(draws["extra"]) == 200
+    assert plot_validation.bootstrap_scores(items, ["extra"], {"full"}, 200, 3)[0] == {"extra": stats["extra"]}
+
+
+def test_paired_change_uses_shared_replicates():
+    items = [dict(item, same=item["inloop_score"], better=float(item["label"] == "full")) for item in scored_items()]
+    stats, draws = plot_validation.bootstrap_scores(items, ["inloop_score", "same", "better"], {"full"}, 200, 0)
+    assert plot_validation.paired_change(stats, draws, "inloop_score", "same") == {"change": 0.0, "ci95": [0.0, 0.0]}
+    better = plot_validation.paired_change(stats, draws, "inloop_score", "better")
+    assert stats["better"]["auc"] == 1.0
+    assert better["change"] == pytest.approx(1.0 - stats["inloop_score"]["auc"]) and better["ci95"][0] > 0
+
+
+@pytest.mark.parametrize("extra", [["--extra-score", "llama8b=probs.csv:p_full"],
+                                   ["--extra-score", "llama70b=a.csv:p_full", "--extra-score", "llama70b=b.csv:p_full"],
+                                   ["--model-prompt", "M", "rubric", "inloop_score"],
+                                   ["--model-prompt", "M", "rubric", "a.csv:s", "--model-prompt", "M", "prompt",
+                                    "b.csv:s"]])
+def test_main_rejects_bad_score_options(extra):
+    with pytest.raises(SystemExit):
+        plot_validation.main(["--metrics", "m.json", "--key", "k.csv", "--labels", "l.csv", "--population", "p.csv",
+                              "--out-dir", "out", *extra])
