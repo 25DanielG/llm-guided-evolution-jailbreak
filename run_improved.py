@@ -18,6 +18,7 @@ from deap.tools import HallOfFame, ParetoFront
 from functools import partial
 from src.utils.print_utils import print_population, print_scores, box_print, print_job_info
 from src.llm_utils import split_file, retrieve_base_code
+from src.map_elites import ArchiveDecision, MapElitesArchive, descriptor_from_file
 from src.cfg.constants import *
 from src.cfg import constants
 import glob
@@ -539,7 +540,7 @@ def check4results(gene_id):
         out_dir = os.path.join(OUTPUT_DIR, str(GENERATION))
         # The job saves the model results to a file f'{gene_id}_results.csv'
         # results_path = os.path.join(out_dir, f'{gene_id}_results.csv')
-        results_path = f'{SOTA_ROOT}/results/{gene_id}_results.csv'
+        results_path = _gene_result_path(gene_id, "csv")
         with open(results_path, 'r') as file:
             lines = file.readlines()
         # Skip header line (first line) and parse data line (second line)
@@ -575,10 +576,137 @@ def cancel_eval_job(gene_id, reason):
 
 _TOKEN_RE = re.compile(r"\w+")
 
+def _gene_result_path(gene_id, extension):
+    """Resolve eval.py's configurable per-gene results directory."""
+    results_dir = os.getenv("JB_GENE_RESULTS_DIR", "results")
+    if not os.path.isabs(results_dir):
+        results_dir = os.path.join(SOTA_ROOT, results_dir)
+    return os.path.join(results_dir, f"{gene_id}_results.{extension}")
+
+def _gene_result_data(gene_id):
+    """Load one evaluation sidecar, returning an empty dict if unavailable."""
+    try:
+        with open(_gene_result_path(gene_id, "json")) as file:
+            data = json.load(file)
+    except (OSError, ValueError, TypeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+def _tier_scores_for_gene(gene_id):
+    """Return stable easy/medium/hard means from a gene evaluation."""
+    data = _gene_result_data(gene_id)
+    stored = data.get("tier_scores") or {}
+    if stored:
+        return {
+            tier: float(stored.get(tier, 0.0))
+            for tier in ("easy", "medium", "hard")
+        }
+
+    # Backward compatibility for sidecars written before tier_scores existed.
+    grouped = {tier: [] for tier in ("easy", "medium", "hard")}
+    for behavior in data.get("behaviors", []):
+        tier = behavior.get("tier")
+        error = str(behavior.get("error") or "")
+        if tier in grouped and not error.startswith("target_error"):
+            grouped[tier].append(float(behavior.get("score", 0.0)))
+    return {
+        tier: (sum(values) / len(values) if values else 0.0)
+        for tier, values in grouped.items()
+    }
+
+def _map_elites_quality(individual):
+    """Lexicographic quality used to decide the elite within one map cell.
+
+    Overall judge score is primary. Hard, medium, and easy behavior scores
+    break ties, followed by prompt novelty and lower token cost.
+    """
+    fitness = tuple(float(value) for value in individual.fitness.values)
+    invalid = {tuple(INVALID_FITNESS_MAX), tuple(PLACEHOLDER_FITNESS)}
+    if (len(fitness) < 3 or fitness in invalid
+            or not all(np.isfinite(value) for value in fitness)):
+        return None
+    tiers = _tier_scores_for_gene(individual[0])
+    diversity_index = globals().get("DIVERSITY_OBJ_INDEX", 1)
+    diversity = fitness[diversity_index] if diversity_index < len(fitness) else 0.0
+    return (
+        fitness[0],
+        tiers["hard"],
+        tiers["medium"],
+        tiers["easy"],
+        diversity,
+        -fitness[2],
+    )
+
+def update_map_elites_archive(population, archive=None):
+    """Place evaluated prompts into their cells and retain each cell's best."""
+    archive = archive if archive is not None else MAP_ELITES_ARCHIVE
+    counts = {decision.value: 0 for decision in ArchiveDecision}
+    counts["skipped"] = 0
+
+    for individual in population:
+        prompt_path = os.path.join(VARIANT_DIR, f"{MODEL}_{individual[0]}.py")
+        if not os.path.exists(prompt_path):
+            counts["skipped"] += 1
+            continue
+        try:
+            quality = _map_elites_quality(individual)
+            if quality is None:
+                counts["skipped"] += 1
+                continue
+            descriptor = descriptor_from_file(prompt_path)
+            update = archive.add(
+                individual[0],
+                descriptor,
+                quality,
+                fitness=individual.fitness.values,
+                individual=individual,
+            )
+        except (OSError, SyntaxError, ValueError, TypeError):
+            counts["skipped"] += 1
+            continue
+        counts[update.decision.value] += 1
+
+    box_print(
+        f"MAP-Elites coverage: {len(archive)}/{archive.capacity} "
+        f"({archive.coverage:.1%}); inserted={counts['inserted']} "
+        f"replaced={counts['replaced']} rejected={counts['rejected']} "
+        f"skipped={counts['skipped']}",
+        print_bbox_len=80,
+        new_line_end=False,
+    )
+    return counts
+
+def write_map_elites_summary(archive, generation, run_id=None):
+    """Write a small, human-readable snapshot alongside evaluation results."""
+    run_id = run_id or RUN_ID
+    results_root = os.path.dirname(_gene_result_path("placeholder", "json"))
+    output_dir = os.path.join(results_root, run_id)
+    os.makedirs(output_dir, exist_ok=True)
+    output = os.path.join(output_dir, "map_elites.json")
+    payload = {
+        "generation": int(generation),
+        "occupied_cells": len(archive),
+        "capacity": archive.capacity,
+        "coverage": archive.coverage,
+        "elites": [
+            {
+                "gene_id": elite.gene_id,
+                "format_strategy": elite.descriptor.format_strategy,
+                "conversation_depth": elite.descriptor.conversation_depth,
+                "quality": list(elite.quality),
+                "fitness": list(elite.fitness),
+            }
+            for elite in archive.elites()
+        ],
+    }
+    with open(output, "w", encoding="utf-8") as file:
+        json.dump(payload, file, indent=2)
+    return output
+
 def _rendered_text_for_gene(gene_id):
     """Concatenate a gene's rendered prompt text from its per-behavior sidecar
     JSON (written by eval.py). Returns "" if unavailable."""
-    path = os.path.join(SOTA_ROOT, "results", f"{gene_id}_results.json")
+    path = _gene_result_path(gene_id, "json")
     try:
         with open(path) as f:
             data = json.load(f)
@@ -1065,7 +1193,8 @@ def save_checkpoint(gen, folder_name="checkpoints", global_path=None, checkpoint
     if checkpoint_data is None:
         checkpoint_data = {
             "population": population,
-            "hof": hof, 
+            "hof": hof,
+            "map_elites_archive": MAP_ELITES_ARCHIVE,
         }
     filename = os.path.join(folder_name, f'checkpoint_gen_{gen}.pkl')
     with open(filename, 'wb') as file:
@@ -1123,12 +1252,7 @@ def true_nsga2(pop, k):
 
 def _case_scores_for_gene(gene_id):
     """{behavior: score} from the gene's per-behavior sidecar JSON, or None."""
-    path = os.path.join(SOTA_ROOT, "results", f"{gene_id}_results.json")
-    try:
-        with open(path) as f:
-            data = json.load(f)
-    except (OSError, ValueError):
-        return None
+    data = _gene_result_data(gene_id)
     return {b["behavior"]: float(b["score"]) for b in data.get("behaviors", [])} or None
 
 def lexicase_select(pop, k):
@@ -1137,6 +1261,19 @@ def lexicase_select(pop, k):
     case_scores = {ind[0]: _case_scores_for_gene(ind[0]) for ind in pop}
     return _select(pop, k, key_fn=lambda ind: ind[0], case_scores=case_scores,
                    epsilon=globals().get("LEXICASE_EPSILON", "mad"))
+
+def map_elites_select(pop, k):
+    """Uniformly select parents from occupied MAP-Elites cells.
+
+    Every occupied cell has equal probability, independent of how many similar
+    candidates appeared in the latest population. Returned individuals are
+    isolated copies, so crossover and mutation cannot modify the archive.
+    """
+    elites = [elite.individual for elite in MAP_ELITES_ARCHIVE.elites()
+              if elite.individual is not None]
+    if not elites:
+        return true_nsga2(pop, k)
+    return [copy.deepcopy(random.choice(elites)) for _ in range(k)]
 
 def create_population(n, llm_model):
     individual_func = partial(toolbox.individual, llm_model=llm_model)
@@ -1153,8 +1290,12 @@ toolbox.register("population", create_population)
 toolbox.register("evaluate", evalModel)
 toolbox.register("mate", customCrossover)
 toolbox.register("mutate", customMutation, indpb=0.2)
-_SELECTORS = {"nsga2": true_nsga2, "lexicase": lexicase_select}
-_selection_method = globals().get("SELECTION_METHOD", "nsga2")
+_SELECTORS = {
+    "map_elites": map_elites_select,
+    "nsga2": true_nsga2,
+    "lexicase": lexicase_select,
+}
+_selection_method = globals().get("SELECTION_METHOD", "map_elites")
 if _selection_method not in _SELECTORS:
     raise ValueError(f"Unknown SELECTION_METHOD {_selection_method!r}; expected one of {list(_SELECTORS)}")
 toolbox.register("select", _SELECTORS[_selection_method])
@@ -1169,6 +1310,7 @@ GLOBAL_DATA = {}
 GLOBAL_DATA_HIST = {}
 GLOBAL_DATA_ANCESTRY = {}
 GLOBAL_DATA_ANCESTRY[MODEL] = {'GENES':[MODEL], 'MUTATE_TYPE':["CREATED"]}
+MAP_ELITES_ARCHIVE = MapElitesArchive()
 
 # Main Evolution Loop
 if __name__ == "__main__":
@@ -1210,6 +1352,7 @@ if __name__ == "__main__":
         GLOBAL_DATA_ANCESTRY = global_data["GLOBAL_DATA_ANCESTRY"]
         population = population_data["population"]
         hof = population_data["hof"]
+        MAP_ELITES_ARCHIVE = population_data.get("map_elites_archive", MapElitesArchive())
     else:
         # Create an initial population
         start_gen = 1
@@ -1226,6 +1369,8 @@ if __name__ == "__main__":
     os.environ["JB_NUM_GENS"] = str(num_generations)
     os.environ.setdefault("JB_GEN", str(start_gen))
     check_and_update_fitness(population)
+    update_map_elites_archive(population)
+    write_map_elites_summary(MAP_ELITES_ARCHIVE, max(0, start_gen - 1))
     # Evolution
     for gen in range(start_gen, num_generations if migration_gen == 0 else ((start_gen + migration_gen - 1) // migration_gen) * migration_gen + 1):
         CURRENT_GENERATION = gen
@@ -1252,6 +1397,7 @@ if __name__ == "__main__":
             GLOBAL_DATA = {}
             GLOBAL_DATA_HIST = {}
             GLOBAL_DATA_ANCESTRY = {}
+            MAP_ELITES_ARCHIVE = MapElitesArchive()
             start_gen = 0
             population = toolbox.population(n=start_population_size, llm_model=llm_model)
             delayed_creation_check(population)
@@ -1259,6 +1405,7 @@ if __name__ == "__main__":
                 ind.fitness.values = PLACEHOLDER_FITNESS
             check_and_update_fitness(population)
             population = [ind for ind in population if ind.fitness.values != INVALID_FITNESS_MAX]
+            update_map_elites_archive(population)
             box_print("CURRENT POPULATION SIZE:", len(population))
 
         print_population(population, GLOBAL_DATA)
@@ -1275,6 +1422,14 @@ if __name__ == "__main__":
         else:
             print(f"Selecting {population_size} offspring")
             offspring = toolbox.select(population, population_size)
+
+        # MAP-Elites may select a prompt retained several generations ago.
+        # Restore its completed evaluation metadata before the normal loop
+        # handles unmodified parents and newly generated children together.
+        for individual in offspring:
+            gene_id = individual[0]
+            if gene_id not in GLOBAL_DATA and gene_id in GLOBAL_DATA_HIST:
+                GLOBAL_DATA[gene_id] = copy.deepcopy(GLOBAL_DATA_HIST[gene_id])
         
         print_population(offspring, GLOBAL_DATA)
         
@@ -1328,6 +1483,8 @@ if __name__ == "__main__":
 
         GLOBAL_DATA_HIST.update(GLOBAL_DATA.copy())
         check_and_update_fitness(offspring)
+        update_map_elites_archive(offspring)
+        write_map_elites_summary(MAP_ELITES_ARCHIVE, gen)
         if MODEL == "prompt" and "Jailbreak" in TRAIN_FILE and gen % 2 == 0:
             subprocess.run(["uv", "run", "python", os.path.join(SOTA_ROOT, "audit.py"),
                             "--run-id", RUN_ID, "--generation", str(gen)], check=True)

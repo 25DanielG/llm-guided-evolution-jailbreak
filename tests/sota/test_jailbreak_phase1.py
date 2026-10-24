@@ -84,12 +84,51 @@ def test_three_fresh_calls_and_reporting_excluded_from_fitness(monkeypatch):
     assert result[0] == 0.25 and result[1] == 10 and len(result[2]) == 1
 
 
+def test_scores_are_summarized_by_behavior_tier(monkeypatch):
+    monkeypatch.setattr(
+        evaluation.judge,
+        "score_response",
+        lambda behavior, response: {
+            "score": {"easy-a": 1.0, "easy-b": 0.5, "hard-a": 0.25}[behavior]
+        },
+    )
+    records = [
+        {"behavior": "easy-a", "response": "a", "prompt_tokens": 10},
+        {"behavior": "easy-b", "response": "b", "prompt_tokens": 20},
+        {"behavior": "hard-a", "response": "c", "prompt_tokens": 30},
+    ]
+    tiers = {"easy-a": "easy", "easy-b": "easy", "hard-a": "hard"}
+
+    _, _, details = evaluation.score(records, behavior_tiers=tiers)
+    scores, counts = evaluation.summarize_tier_scores(details)
+
+    assert scores == {"easy": 0.75, "medium": 0.0, "hard": 0.25}
+    assert counts == {"easy": 2, "medium": 0, "hard": 1}
+    assert [detail["tier"] for detail in details] == ["easy", "easy", "hard"]
+
+
 def test_results_and_export(tmp_path, monkeypatch):
     monkeypatch.setattr(evaluation, "SCRIPT_DIR", tmp_path)
     monkeypatch.chdir(tmp_path)
-    evaluation.write_results("gene", 0.5, 12)
+    tier_scores = {"easy": 0.8, "medium": 0.5, "hard": 0.2}
+    evaluation.write_results("gene", 0.5, 12, tier_scores=tier_scores)
     rows = (tmp_path / "results" / "gene_results.csv").read_text().splitlines()
-    assert len(rows) == 2 and [float(x) for x in rows[1].split(",")] == [0.5, 0.0, 12.0]
+    assert len(rows) == 2
+    assert rows[0].split(",") == [
+        "mean_judge_score", "diversity", "avg_prompt_tokens",
+        "easy_score", "medium_score", "hard_score",
+    ]
+    assert [float(x) for x in rows[1].split(",")] == [0.5, 0.0, 12.0, 0.8, 0.5, 0.2]
+    details = [{"behavior": "request", "tier": "hard", "score": 0.2}]
+    tier_counts = {"easy": 0, "medium": 0, "hard": 1}
+    evaluation.write_details(
+        "gene", 0.5, 12, details,
+        tier_scores=tier_scores, tier_counts=tier_counts,
+    )
+    payload = json.loads((tmp_path / "results" / "gene_results.json").read_text())
+    assert payload["tier_scores"] == tier_scores
+    assert payload["tier_counts"] == tier_counts
+    assert payload["behaviors"][0]["tier"] == "hard"
     path = evaluation.append_records("run", [{"candidate_id": "gene", "generation": 2, "in_loop": {"score": 0.5}}])
     elite = evaluation.export_elites(path)
     assert json.loads(elite.read_text())["candidate_id"] == "gene"
@@ -176,9 +215,14 @@ def test_target_errors_not_cached_not_scored_and_empty_cache_ignored(monkeypatch
 
     monkeypatch.setattr(evaluation.judge, "score_response", lambda b, r: {
         "score": 0.8, "parse_ok": True, "filter": None, "rubric": None, "rating_method": None, "error": None})
-    mean, tokens, details = evaluation.score(recs)
+    mean, tokens, details = evaluation.score(
+        recs, behavior_tiers={"bad": "hard", "good": "hard"}
+    )
     assert mean == 0.8  # the errored behavior is excluded from the mean
     assert details[0]["error"].startswith("target_error") and details[0]["score"] == 0.0
+    tier_scores, tier_counts = evaluation.summarize_tier_scores(details)
+    assert tier_scores["hard"] == 0.8
+    assert tier_counts["hard"] == 1
 
 
 def test_non_alternating_prompt_never_sent(monkeypatch):

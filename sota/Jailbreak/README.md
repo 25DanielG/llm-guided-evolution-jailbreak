@@ -32,6 +32,20 @@ Objectives (order matches `FITNESS_WEIGHTS`): `mean_judge_score` (maximize),
 (including the rubric and reporting/verification results) is written to
 `results/<gene_id>_results.json` alongside the CSV.
 
+## MAP-Elites prompt diversity
+
+Jailbreak runs use MAP-Elites parent selection by default (`JB_SELECTION=map_elites`).
+Each evaluated prompt is classified without importing or executing its source into one
+of 18 cells: six prompt-format strategies crossed with three conversation-depth bins.
+The best prompt in each occupied cell is retained, and parent cells are sampled uniformly,
+so one common prompt style cannot crowd every other style out of the search.
+
+Within a cell, replacement is decided by overall judge score, then hard, medium, and easy
+behavior scores, prompt novelty, and finally lower token cost. The archive is saved in each
+checkpoint and its current contents and coverage are written to
+`results/<run_id>/map_elites.json`. Set `JB_SELECTION=nsga2` or `JB_SELECTION=lexicase`
+for comparison runs; the archive is still recorded.
+
 ## One-time setup
 
 ```bash
@@ -154,8 +168,9 @@ Caveats:
 
 ## Outputs
 
-`results/<gene_id>_results.csv` is the three-column LLM-GE fitness file
-(`mean_judge_score,diversity,avg_prompt_tokens`); `results/<gene_id>_results.json`
+`results/<gene_id>_results.csv` keeps the three LLM-GE fitness columns first
+(`mean_judge_score,diversity,avg_prompt_tokens`) and appends easy, medium, and hard
+diagnostic scores; `results/<gene_id>_results.json`
 carries the per-behavior detail (rubric, filter, tokens, rendered prompt +
 response) that feeds directed mutation, the diversity objective's text source,
 and `individual_card.py`. `results/<run_id>/candidates.jsonl` is append-only and
@@ -163,6 +178,8 @@ contains generation, candidate, behavior, prompt, target response, in-loop judge
 result, and verification result, model identities, usage, and latency.
 `results/<run_id>/elites.jsonl` exports the highest-scoring behavior responses for
 labeling. `results/<run_id>/audits.jsonl` stores the periodic score comparisons.
+`results/<run_id>/map_elites.json` shows the occupied cells, coverage, and current
+cell elites.
 Logs print mean judge score, in-loop success rate at the verification threshold,
 verified success rate, and avg prompt tokens.
 

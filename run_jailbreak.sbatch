@@ -37,6 +37,9 @@ JUDGE_PROMPT="${JB_JUDGE_PROMPT-rubric}"  # unset -> rubric, same as jb_config.j
 MUTATOR_MODEL="${JB_RUN_MUTATOR_MODEL:-$LLAMA_8B}"
 REPORTING_MODEL="$HOME/scratch/llm_storage/HarmBench-Llama-2-13b-cls"
 export LOCAL=true LOCAL_LLM=true JB_JUDGE_MODE=llm JB_FULL_BEHAVIORS=0
+# MAP-Elites is the default parent selector; override with nsga2 or lexicase
+# only for comparison runs.
+export JB_SELECTION="${JB_SELECTION:-map_elites}"
 # 50 behaviors per gene, equal easy/medium/hard; needs `tier` in curated.csv
 # (sota/Jailbreak/stratify_behaviors.py) or eval.py raises.
 export JB_STRATIFIED=1 JB_N_BEHAVIORS_PER_EVAL=50

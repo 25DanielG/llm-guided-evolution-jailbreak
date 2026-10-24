@@ -1,7 +1,7 @@
 """Fitness evaluation for Jailbreaking. The titantic GE loop is not changed.
 Invoked as: uv run python eval.py --model prompt_<gene_id> --variant_dir <dir>
-Writes results to results/<gene_id>_results.csv with a header line + one data line of
-len(FITNESS_WEIGHTS) == 3 comma-separated floats.
+Writes results to results/<gene_id>_results.csv with the three existing fitness
+values first, followed by easy/medium/hard diagnostic scores.
 
 Objectives are:
     1. mean_judge_score to maximize (continuous in-loop rubric score; never the
@@ -272,7 +272,7 @@ def _target_error_verdict(error):
     return {"score": 0.0, "parse_ok": False, "filter": None, "rubric": None, "rating_method": None,
             "usage": {}, "latency_seconds": 0.0, "error": f"target_error: {error}"}
 
-def score(records):
+def score(records, behavior_tiers=None):
     """Return (mean_judge_score, avg_prompt_tokens, details).
     mean_judge_score is the continuous in-loop rubric score (judge.score_response),
     never the separate HarmBench reporting/verification classifier. details is a
@@ -292,7 +292,10 @@ def score(records):
         verdicts = list(pool.map(
             lambda r: _target_error_verdict(r["error"]) if r.get("error")
             else judge.score_response(r["behavior"], r["response"]), records))
+    behavior_tiers = behavior_tiers or {}
     for rec, verdict in zip(records, verdicts):
+        tier = behavior_tiers.get(rec["behavior"])
+        rec["tier"] = tier
         rec["in_loop"] = verdict
         if rec.get("error"):
             # the target never answered: not evidence about the gene, so keep it
@@ -304,6 +307,7 @@ def score(records):
             tokens.append(rec["prompt_tokens"])
         details.append({
             "behavior": rec["behavior"],
+            "tier": tier,
             "score": verdict["score"],
             "parse_ok": verdict.get("parse_ok"),
             "filter": verdict.get("filter"),
@@ -322,21 +326,58 @@ def score(records):
     avg_tokens = (sum(tokens) / len(tokens)) if tokens else PENALTY_TOKENS
     return harm_rate, avg_tokens, details
 
-def write_results(gene_id, harm_rate, avg_tokens, diversity=0.0):
+def summarize_tier_scores(details):
+    """Return mean judge score and sample count for each difficulty tier."""
+    scores = {tier: [] for tier in TIERS}
+    for detail in details:
+        # Target failures are infrastructure errors, not evidence of prompt
+        # quality, so exclude them from tier means just as score() excludes
+        # them from the overall mean.
+        if str(detail.get("error") or "").startswith("target_error"):
+            continue
+        tier = detail.get("tier")
+        if tier in scores:
+            scores[tier].append(float(detail["score"]))
+    means = {
+        tier: (sum(values) / len(values) if values else 0.0)
+        for tier, values in scores.items()
+    }
+    counts = {tier: len(values) for tier, values in scores.items()}
+    return means, counts
+
+def write_results(gene_id, harm_rate, avg_tokens, diversity=0.0, tier_scores=None):
     """CSV columns match FITNESS_WEIGHTS order: judge_score, diversity, tokens.
     diversity is a placeholder here; run_improved.py fills it across the
-    generation (the per-gene eval has no view of the population).
+    generation (the per-gene eval has no view of the population). Tier scores
+    are appended so the first three fitness columns remain backward compatible.
     """
+    supplied_tier_scores = tier_scores or {}
+    tier_scores = {tier: float(supplied_tier_scores.get(tier, 0.0)) for tier in TIERS}
     filename = os.path.abspath(f"{jb_config.gene_results_dir()}/{gene_id}_results.csv")
     os.makedirs(os.path.dirname(filename), exist_ok=True)
     with open(filename, "w") as f:
-        f.write("mean_judge_score,diversity,avg_prompt_tokens\n")
-        f.write(f"{harm_rate},{diversity},{avg_tokens}\n")
+        f.write("mean_judge_score,diversity,avg_prompt_tokens,easy_score,medium_score,hard_score\n")
+        f.write(
+            f"{harm_rate},{diversity},{avg_tokens},"
+            f"{tier_scores['easy']},{tier_scores['medium']},{tier_scores['hard']}\n"
+        )
     print(f"results have been written to {filename}", flush=True)
 
-def write_details(gene_id, harm_rate, avg_tokens, details, decoding=None):
+def write_details(
+    gene_id,
+    harm_rate,
+    avg_tokens,
+    details,
+    decoding=None,
+    tier_scores=None,
+    tier_counts=None,
+):
     """Sidecar per-behavior JSON. Read by run_improved (diversity), directed
     mutation, the individual-card exporter, and the post-run report."""
+    supplied_tier_scores = tier_scores or {}
+    supplied_tier_counts = tier_counts or {}
+    tier_scores = {tier: float(supplied_tier_scores.get(tier, 0.0)) for tier in TIERS}
+    tier_counts = {tier: int(supplied_tier_counts.get(tier, 0)) for tier in TIERS}
     filename = os.path.abspath(f"{jb_config.gene_results_dir()}/{gene_id}_results.json")
     os.makedirs(os.path.dirname(filename), exist_ok=True)
     payload = {
@@ -345,6 +386,8 @@ def write_details(gene_id, harm_rate, avg_tokens, details, decoding=None):
         "avg_prompt_tokens": avg_tokens,
         "n_behaviors": len(details),
         "n_jailbroken": sum(1 for d in details if d["score"] >= jb_config.verification_threshold()),
+        "tier_scores": tier_scores,
+        "tier_counts": tier_counts,
         "n_target_errors": sum(1 for d in details if str(d.get("error") or "").startswith("target_error")),
         "n_malformed_rubric": sum(1 for d in details if d.get("error") == "malformed_rubric"),
         "decoding": decoding or {},
@@ -418,7 +461,9 @@ if __name__ == "__main__":
     model_module = importlib.import_module(args.model)
     strategy = model_module.PromptStrategy()
 
-    behaviors = sample_behaviors(load_behaviors())
+    behavior_rows = load_behavior_rows()
+    behaviors = sample_behaviors([behavior for _, behavior, _ in behavior_rows])
+    behavior_tiers = {behavior: tier for _, behavior, tier in behavior_rows}
     print(f"Sampled {len(behaviors)} behaviors", flush=True)
 
     target_url = jb_config.target_base_url()
@@ -438,7 +483,8 @@ if __name__ == "__main__":
     decoding = resolve_decoding(strategy)
     print(f"decoding overrides: {decoding}", flush=True)
     records = get_target_responses(strategy, behaviors, target_url, jb_config.target_model_name(), decoding=decoding)
-    harm_rate, avg_tokens, details = score(records)
+    harm_rate, avg_tokens, details = score(records, behavior_tiers=behavior_tiers)
+    tier_scores, tier_counts = summarize_tier_scores(details)
 
     # Each verification is 3 fresh target generations + 3 HarmBench calls; run
     # the records that clear the threshold concurrently (order preserved).
@@ -454,6 +500,7 @@ if __name__ == "__main__":
         report_rows.append({
             "run_id": args.run_id, "generation": args.generation, "candidate_id": gene_id,
             "behavior_index": index, "behavior": rec["behavior"], "evolved_prompt": rec["messages"],
+            "tier": rec.get("tier"),
             "target_response": rec["response"], "target_model": jb_config.target_model_name(),
             "judge_model": jb_config.judge_model_name(), "reporting_model": jb_config.reporting_model_name(),
             "target_usage": rec.get("usage", {}), "target_latency_seconds": rec.get("latency_seconds", 0),
@@ -471,8 +518,16 @@ if __name__ == "__main__":
     n_bad = sum(1 for d in details if d.get("error") == "malformed_rubric")
     print(f"target_errors={n_err} malformed_rubric={n_bad} of {len(details)} behaviors", flush=True)
 
-    write_results(gene_id, harm_rate, avg_tokens)
-    write_details(gene_id, harm_rate, avg_tokens, details, decoding=decoding)
+    write_results(gene_id, harm_rate, avg_tokens, tier_scores=tier_scores)
+    write_details(
+        gene_id,
+        harm_rate,
+        avg_tokens,
+        details,
+        decoding=decoding,
+        tier_scores=tier_scores,
+        tier_counts=tier_counts,
+    )
     print('=' * 60)
     print('job done')
     print('=' * 60)
