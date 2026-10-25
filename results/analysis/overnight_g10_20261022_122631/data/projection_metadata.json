@@ -1,0 +1,21 @@
+{
+  "clustering": "HDBSCAN in original cosine space; colors are local to each map.",
+  "fit": "One fixed densMAP per run/behavior on unique vectors pooled across generations 0\u201310; duplicates restored.",
+  "limitations": "Maps are descriptive projections; original-space metrics determine contraction and separation.",
+  "opacity": "analysis-scratch generation_alpha; oldest 0.10, newest 1.0",
+  "reference_branch": "analysis-scratch",
+  "reference_commit": "7921b0a77",
+  "selected_cases": {
+    "broad_01_repeat_01": "25e7dd33ce97bb1d3b008a7b8aef57b6deccf7fad055f7414961fb3ea9793dd1",
+    "broad_02_repeat_01": "6a5fdb3b131897871e02e68a4dacd4c9fb74fcc477f1c48bc4e840182024c2e9",
+    "broad_03_repeat_01": "c2657442fb9a835830bc12db9368e82b5b3bc39f8c9de21eeb5bf69c0cc0711a",
+    "narrow_01_repeat_01": "7c74e1d14936599ac9e05fdde7c261baf7d763f97d053d43cc2d1945ed1881c4",
+    "narrow_02_repeat_01": "53d13ce0d381d1669a143fdfda3545d21dba7376f3eddcb395aac9e49698fabc",
+    "narrow_03_repeat_01": "59dda876fa5c6e40741965224321a2ed2fae501a39a942b6aefec70add37d2b9",
+    "random_01_repeat_01": "d6161b7e17fd02646e138d4a98081ddf38fbe061a98a42478def427d81de0c6b",
+    "random_02_repeat_01": "dccc8f9752470fc3fe079b4ae227eec48bab852e5608d1a2e29e3a05aae525d3",
+    "random_03_repeat_01": "1331b7857ff526e50edc49e00d5d92f2c6264b3123c8188c38ed2a04ccc9f045",
+    "random_04_repeat_01": "4d3a88c9c4b2ce5621ff46a3cd28fb110b581d0d224930c0a3a1024c7b6acbe5"
+  },
+  "selection": "Median relative endpoint nearest-neighbor change within each run, before looking at projections."
+}

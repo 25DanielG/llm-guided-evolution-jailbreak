@@ -1,0 +1,16 @@
+{
+  "status": "passed",
+  "generation_metric_rows": 660,
+  "raw_inputs_matching_previous_completed_analysis": 5461,
+  "map_count": 300,
+  "map_population_observations": 88980,
+  "projection_trustworthiness_mean": 0.9633142069738496,
+  "projection_trustworthiness_minimum": 0.9360382582431412,
+  "agreement_with_previous_analysis": {
+    "pairwise_max_absolute_difference": 4.4357711947995426e-11,
+    "nearest_neighbor_max_absolute_difference": 1.8404465451649088e-11,
+    "within_cluster_max_absolute_difference": 2.442843149985663e-11,
+    "between_centroids_max_absolute_difference": 9.483847041025228e-11,
+    "pair_coverage_max_absolute_difference": 0.0
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "analysis_date": "2026-10-22",
+  "source_analysis": "results/analysis/overnight_g10_20261022_122631",
+  "runs": 10,
+  "generations": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10
+  ],
+  "evolution_behaviors_per_run": 30,
+  "common_heldout_behaviors": 30,
+  "initial_population": 24,
+  "evolution_seed": 42,
+  "embedding": "sentence-transformers/all-mpnet-base-v2",
+  "selection": "One behavior per run, closest to the median relative generation-0-to-10 nearest-neighbor change; selected before inspecting projections.",
+  "coordinates": "Reuse the validated fixed generation-0-to-10 densMAP coordinates; regenerate graphics without refitting.",
+  "data_scope": "Aggregated distances and selected projection coordinates/multiplicities. No prompt text or model responses."
+}

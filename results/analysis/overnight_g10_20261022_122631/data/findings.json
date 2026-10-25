@@ -1,0 +1,179 @@
+{
+  "deduplicated_evolution": [
+    {
+      "between_centroids": {
+        "delta": 0.07489984640589478,
+        "final": 0.17149367586694517,
+        "initial": 0.0965938294610504
+      },
+      "nearest_neighbor": {
+        "delta": 0.02753261677511367,
+        "final": 0.03694077036407653,
+        "initial": 0.009408153588962853
+      },
+      "pairwise": {
+        "delta": 0.1069435023640429,
+        "final": 0.16834661565845857,
+        "initial": 0.06140311329441567
+      },
+      "weighting": "population",
+      "within_cluster": {
+        "delta": 0.021442421903870156,
+        "final": 0.05621232240788745,
+        "initial": 0.0347699005040173
+      }
+    },
+    {
+      "between_centroids": {
+        "delta": 0.0742430608305181,
+        "final": 0.17081740006358306,
+        "initial": 0.09657433923306498
+      },
+      "nearest_neighbor": {
+        "delta": 0.013309539787441049,
+        "final": 0.04790043420702179,
+        "initial": 0.034590894419580735
+      },
+      "pairwise": {
+        "delta": 0.10123206827320153,
+        "final": 0.17283257879253636,
+        "initial": 0.07160051051933483
+      },
+      "weighting": "unique_prompts",
+      "within_cluster": {
+        "delta": 0.019182231642995155,
+        "final": 0.061507097362712246,
+        "initial": 0.0423248657197171
+      }
+    }
+  ],
+  "endpoints": [
+    {
+      "baseline_value": 0.06140311329441567,
+      "decreasing_runs": 0,
+      "delta": 0.1069435023640429,
+      "delta_fraction_of_initial_pairwise": 1.7416625416250502,
+      "delta_fraction_of_own_initial": 1.7416625416250502,
+      "eligible_behavior_run_groups": 300,
+      "generation": 10,
+      "increasing_runs": 10,
+      "initial_pairwise_distance": 0.06140311329441567,
+      "metric": "pairwise",
+      "runs": 10,
+      "split": "evolution",
+      "value": 0.16834661565845857
+    },
+    {
+      "baseline_value": 0.009408153588962853,
+      "decreasing_runs": 0,
+      "delta": 0.027532616775113677,
+      "delta_fraction_of_initial_pairwise": 0.44839121826120243,
+      "delta_fraction_of_own_initial": 2.926463361250127,
+      "eligible_behavior_run_groups": 300,
+      "generation": 10,
+      "increasing_runs": 10,
+      "initial_pairwise_distance": 0.06140311329441567,
+      "metric": "nearest_neighbor",
+      "runs": 10,
+      "split": "evolution",
+      "value": 0.03694077036407653
+    },
+    {
+      "baseline_value": 0.0347699005040173,
+      "decreasing_runs": 0,
+      "delta": 0.02144242190387015,
+      "delta_fraction_of_initial_pairwise": 0.34920740583719295,
+      "delta_fraction_of_own_initial": 0.6166949457158412,
+      "eligible_behavior_run_groups": 300,
+      "generation": 10,
+      "increasing_runs": 10,
+      "initial_pairwise_distance": 0.06140311329441567,
+      "metric": "within_cluster",
+      "runs": 10,
+      "split": "evolution",
+      "value": 0.05621232240788745
+    },
+    {
+      "baseline_value": 0.0965938294610504,
+      "decreasing_runs": 0,
+      "delta": 0.07489984640589477,
+      "delta_fraction_of_initial_pairwise": 1.2191391675509382,
+      "delta_fraction_of_own_initial": 0.7754102598872187,
+      "eligible_behavior_run_groups": 285,
+      "generation": 10,
+      "increasing_runs": 10,
+      "initial_pairwise_distance": 0.061436666460611675,
+      "metric": "between_centroids",
+      "runs": 10,
+      "split": "evolution",
+      "value": 0.17149367586694517
+    },
+    {
+      "baseline_value": 0.062484800048825305,
+      "decreasing_runs": 0,
+      "delta": 0.10756782281943703,
+      "delta_fraction_of_initial_pairwise": 1.721503833498452,
+      "delta_fraction_of_own_initial": 1.721503833498452,
+      "eligible_behavior_run_groups": 300,
+      "generation": 10,
+      "increasing_runs": 10,
+      "initial_pairwise_distance": 0.062484800048825305,
+      "metric": "pairwise",
+      "runs": 10,
+      "split": "heldout",
+      "value": 0.17005262286826234
+    },
+    {
+      "baseline_value": 0.00961369253446898,
+      "decreasing_runs": 0,
+      "delta": 0.023657449528190943,
+      "delta_fraction_of_initial_pairwise": 0.37861127041624737,
+      "delta_fraction_of_own_initial": 2.460807795066194,
+      "eligible_behavior_run_groups": 300,
+      "generation": 10,
+      "increasing_runs": 10,
+      "initial_pairwise_distance": 0.062484800048825305,
+      "metric": "nearest_neighbor",
+      "runs": 10,
+      "split": "heldout",
+      "value": 0.03327114206265992
+    },
+    {
+      "baseline_value": 0.015971861948806208,
+      "decreasing_runs": 0,
+      "delta": 0.015326018960141751,
+      "delta_fraction_of_initial_pairwise": 0.2452759542827388,
+      "delta_fraction_of_own_initial": 0.9595637007923971,
+      "eligible_behavior_run_groups": 300,
+      "generation": 10,
+      "increasing_runs": 10,
+      "initial_pairwise_distance": 0.062484800048825305,
+      "metric": "within_cluster",
+      "runs": 10,
+      "split": "heldout",
+      "value": 0.03129788090894796
+    },
+    {
+      "baseline_value": 0.09357535700574172,
+      "decreasing_runs": 0,
+      "delta": 0.08241136254671506,
+      "delta_fraction_of_initial_pairwise": 1.3189025568189263,
+      "delta_fraction_of_own_initial": 0.8806951443600515,
+      "eligible_behavior_run_groups": 300,
+      "generation": 10,
+      "increasing_runs": 10,
+      "initial_pairwise_distance": 0.062484800048825305,
+      "metric": "between_centroids",
+      "runs": 10,
+      "split": "heldout",
+      "value": 0.1759867195524568
+    }
+  ],
+  "final_generation": 10,
+  "global_reference": {
+    "example_0_04_fraction": 0.21178406093864288,
+    "mean_pairwise_cosine": 0.18887162623436812,
+    "scope": "Unique successful retained prompts across both splits, all runs and generations.",
+    "unique_prompts": 74044
+  }
+}
