@@ -36,15 +36,45 @@ JUDGE_MAX_LEN="${JB_RUN_JUDGE_MAX_LEN:-}"
 JUDGE_PROMPT="${JB_JUDGE_PROMPT-rubric}"  # unset -> rubric, same as jb_config.judge_prompt()
 MUTATOR_MODEL="${JB_RUN_MUTATOR_MODEL:-$LLAMA_8B}"
 REPORTING_MODEL="$HOME/scratch/llm_storage/HarmBench-Llama-2-13b-cls"
-export LOCAL=true LOCAL_LLM=true JB_JUDGE_MODE=llm JB_FULL_BEHAVIORS=0
-# MAP-Elites is the default parent selector; override with nsga2 or lexicase
-# only for comparison runs.
-export JB_SELECTION="${JB_SELECTION:-map_elites}"
-# 50 behaviors per gene, equal easy/medium/hard; needs `tier` in curated.csv
-# (sota/Jailbreak/stratify_behaviors.py) or eval.py raises.
-export JB_STRATIFIED=1 JB_N_BEHAVIORS_PER_EVAL=50
+export LOCAL=true LOCAL_LLM=true JB_JUDGE_MODE=llm
+
+# A fresh checkout has no earlier candidates from which to derive behavior
+# difficulty. Bootstrap mode evaluates one small, unstratified starting
+# population. Those candidates can then be used by calibrate_behaviors.sbatch
+# and stratify_behaviors.py before the real MAP-Elites/baseline comparison.
+BOOTSTRAP="${JB_BOOTSTRAP:-0}"
+case "$BOOTSTRAP" in
+    1|true|TRUE|True|yes|YES|Yes)
+        export JB_FULL_BEHAVIORS=0
+        export JB_STRATIFIED=0
+        export JB_N_BEHAVIORS_PER_EVAL="${JB_N_BEHAVIORS_PER_EVAL:-12}"
+        export LLMGE_NUM_GENERATIONS="${LLMGE_NUM_GENERATIONS:-1}"
+        export LLMGE_START_POPULATION_SIZE="${LLMGE_START_POPULATION_SIZE:-12}"
+        export LLMGE_POPULATION_SIZE="${LLMGE_POPULATION_SIZE:-12}"
+        export JB_SELECTION="${JB_SELECTION:-nsga2}"
+        RUN_ID="${RUN_ID:-bootstrap_${SLURM_JOB_ID}}"
+        ;;
+    0|false|FALSE|False|no|NO|No|"")
+        export JB_FULL_BEHAVIORS="${JB_FULL_BEHAVIORS:-0}"
+        # Production default: 50 behaviors per gene, split as evenly as
+        # possible across easy/medium/hard. Requires tier values in curated.csv.
+        export JB_STRATIFIED="${JB_STRATIFIED:-1}"
+        export JB_N_BEHAVIORS_PER_EVAL="${JB_N_BEHAVIORS_PER_EVAL:-50}"
+        export JB_SELECTION="${JB_SELECTION:-map_elites}"
+        RUN_ID="${RUN_ID:-jb_${SLURM_JOB_ID}}"
+        ;;
+    *)
+        echo "ERROR: JB_BOOTSTRAP must be 0/1, false/true, or no/yes; got '$BOOTSTRAP'" >&2
+        exit 1
+        ;;
+esac
+export RUN_ID
+echo "Run configuration: run_id=$RUN_ID bootstrap=$BOOTSTRAP selection=$JB_SELECTION "\
+     "stratified=$JB_STRATIFIED behaviors=$JB_N_BEHAVIORS_PER_EVAL "\
+     "generations=${LLMGE_NUM_GENERATIONS:-17} start_population=${LLMGE_START_POPULATION_SIZE:-24} "\
+     "population=${LLMGE_POPULATION_SIZE:-24}"
 # Fresh response/verdict cache per run so cached failures from older runs are not reused
-export JB_CACHE_DIR="${JB_CACHE_DIR:-$HOME/scratch/jb_cache_${RUN_ID:-jb_${SLURM_JOB_ID}}}"
+export JB_CACHE_DIR="${JB_CACHE_DIR:-$HOME/scratch/jb_cache_${RUN_ID}}"
 export JB_TARGET_MODEL_PATH="$TARGET_MODEL"
 export JB_JUDGE_MODEL_PATH="$JUDGE_MODEL"
 export JB_REPORTING_MODEL_PATH="$REPORTING_MODEL"
@@ -168,10 +198,26 @@ echo "Judge ready. Waiting for reporting vLLM..."
 wait_or_die "http://$HOST:8003/v1/models" "$REPORTING_PID" "reporting vLLM" sota/Jailbreak/reporting_vllm.out
 echo "Reporting ready. Waiting for mutator..."
 wait_or_die "http://$HOST:8137/" "$MUT_PID" "mutator" mutator.log
-echo "Mutator ready. Starting evolution."
+echo "Mutator ready."
+
+SMOKE_ONLY="${JB_SMOKE_ONLY:-0}"
+case "$SMOKE_ONLY" in
+    1|true|TRUE|True|yes|YES|Yes)
+        echo "Running smoke test only; evolution will not start."
+        uv run python sota/Jailbreak/smoke_test.py
+        echo "=== smoke test complete ==="
+        exit 0
+        ;;
+    0|false|FALSE|False|no|NO|No|"") ;;
+    *)
+        echo "ERROR: JB_SMOKE_ONLY must be 0/1, false/true, or no/yes; got '$SMOKE_ONLY'" >&2
+        exit 1
+        ;;
+esac
+
+echo "Starting evolution."
 
 # run's checkpoint/global dirs
-RUN_ID="${RUN_ID:-jb_${SLURM_JOB_ID}}"
 uv run python run_improved.py --checkpoints "${RUN_ID}/ckpt" --global_path "${RUN_ID}/global" \
     --llm_model llama3 --prompt_group Jailbreak/traits --run-id "$RUN_ID"
 

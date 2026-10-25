@@ -94,7 +94,26 @@ variables itself, so exporting them has no effect: override the judge and mutato
 size / generation count. The eval step refuses to start if target, judge, and reporting endpoints/models
 aren't distinct, and checks each served model identity before evolution.
 
-Before a full run, smoke-test the wiring: `python sota/Jailbreak/smoke_test.py`.
+Before a full run, smoke-test all four services without starting evolution:
+
+```bash
+sbatch --export=ALL,JB_SMOKE_ONLY=1 run_jailbreak.sbatch
+```
+
+For a fresh checkout with no earlier `candidates.jsonl`, first create a small
+unstratified candidate set. This evaluates a 12-prompt starting population on
+12 behaviors and stops before the evolutionary loop:
+
+```bash
+sbatch --export=ALL,JB_BOOTSTRAP=1 run_jailbreak.sbatch
+```
+
+The result is written under `sota/Jailbreak/results/bootstrap_<jobid>/`. The
+production defaults are unchanged when `JB_BOOTSTRAP` is unset. Population and
+generation counts can also be overridden explicitly with
+`LLMGE_START_POPULATION_SIZE`, `LLMGE_POPULATION_SIZE`, and
+`LLMGE_NUM_GENERATIONS`. To start all four model services, run the pipeline
+smoke test, and exit before evolution, submit with `JB_SMOKE_ONLY=1`.
 
 ## Guide judge (opt-in)
 

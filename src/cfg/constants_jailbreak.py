@@ -156,9 +156,11 @@ NUM_EOT_ELITES = 10
 GENERATION = 0
 PROB_QC = 0.0
 PROB_EOT = 0.0
-num_generations = 17  # migration_gen=0 -> loop uses range(start_gen, num_generations); resuming from gen 8 reaches gen 16
-start_population_size = 24
-population_size = 24
+# Keep production defaults while allowing small, explicitly configured smoke or
+# bootstrap runs without editing this file on the cluster.
+num_generations = int(os.getenv("LLMGE_NUM_GENERATIONS", "17"))  # migration_gen=0 -> loop uses range(start_gen, num_generations); resuming from gen 8 reaches gen 16
+start_population_size = int(os.getenv("LLMGE_START_POPULATION_SIZE", "24"))
+population_size = int(os.getenv("LLMGE_POPULATION_SIZE", "24"))
 crossover_probability = 0.15
 mutation_probability = 0.8
 num_elites = 6
