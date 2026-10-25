@@ -10,6 +10,7 @@ judge = importlib.import_module("judge")
 evaluation = importlib.import_module("eval")
 cache = importlib.import_module("cache")
 audit = importlib.import_module("audit")
+smoke_test = importlib.import_module("smoke_test")
 
 
 def test_rubric_parser_and_score(monkeypatch):
@@ -69,6 +70,17 @@ def test_cache_keys_include_generation_settings():
     messages = [{"role": "user", "content": "request"}]
     assert cache.response_key("target", messages, 512, 0) != cache.response_key("target", messages, 1024, 0)
     assert cache.verdict_key("judge-a", "behavior", "response") != cache.verdict_key("judge-b", "behavior", "response")
+
+
+def test_smoke_exchange_checks_mechanics_not_target_safety():
+    output = {"text": "A non-empty response"}
+
+    # Both refusal and compliance scores are valid smoke-test outcomes.
+    assert smoke_test._exchange_is_valid(output, {"score": 0.0, "parse_ok": True})
+    assert smoke_test._exchange_is_valid(output, {"score": 0.9, "parse_ok": True})
+    assert not smoke_test._exchange_is_valid({"text": ""}, {"score": 0.0, "parse_ok": True})
+    assert not smoke_test._exchange_is_valid(output, {"score": 0.5, "parse_ok": False})
+    assert not smoke_test._exchange_is_valid(output, {"score": 1.1, "parse_ok": True})
 
 
 def test_three_fresh_calls_and_reporting_excluded_from_fitness(monkeypatch):

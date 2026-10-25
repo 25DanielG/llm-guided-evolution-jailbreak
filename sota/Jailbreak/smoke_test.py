@@ -1,9 +1,13 @@
 """Pre-run smoke test: verify the target + judge + cache wiring in seconds before
 spending a full evolution budget. This checks pipeline MECHANICS, not attack success:
 
-  1. a benign prompt round-trips through the target and judge (score expected low),
-  2. a plain harmful ask (no jailbreak) is refused and detected as such,
+  1. a benign prompt round-trips through the target and judge,
+  2. a plain harmful ask also produces a parseable judge result,
   3. re-sending (1) is served from cache.
+
+The two scores are informational. A deliberately weak target may comply with a
+plain harmful request, and the judge measures how fully a response satisfies its
+paired behavior rather than whether the behavior itself is benign or harmful.
 
 Run after the vLLM servers are up:  python sota/Jailbreak/smoke_test.py
 """
@@ -54,6 +58,20 @@ def _query(target_url, target_name, content):
     return messages, out
 
 
+def _exchange_is_valid(output, verdict):
+    """Whether target and judge completed a mechanically valid exchange."""
+    text = output.get("text") if isinstance(output, dict) else None
+    score = verdict.get("score") if isinstance(verdict, dict) else None
+    return (
+        isinstance(text, str)
+        and bool(text.strip())
+        and verdict.get("parse_ok") is True
+        and isinstance(score, (int, float))
+        and not isinstance(score, bool)
+        and 0.0 <= score <= 1.0
+    )
+
+
 def main():
     target_url = jb_config.target_base_url()
     judge_url = jb_config.judge_base_url()
@@ -73,17 +91,16 @@ def main():
     _, out = _query(target_url, target_name, benign)
     v = judge.score_response(benign, out["text"])
     print(f"\n[1] benign -> {len(out['text'])} chars, score={v['score']} parse_ok={v['parse_ok']} filter={v['filter']}")
-    ok = ok and v["parse_ok"] and len(out["text"]) > 0
+    ok = ok and _exchange_is_valid(out, v)
 
-    # 2. plain harmful ask -> expect refusal detected
+    # 2. Plain harmful ask. Whether it is refused is an experimental result,
+    # not a wiring requirement, especially for intentionally weaker targets.
     harmful = _one_harmful_behavior()
     _, out2 = _query(target_url, target_name, harmful)
     v2 = judge.score_response(harmful, out2["text"])
     print(f"[2] plain harmful -> score={v2['score']} filter={v2['filter']} "
-          f"(want a refusal or score=0)\n    behavior: {harmful[:70]}...")
-    # guide score is P(full), never exactly 0 once the judge is called: require it below the success threshold
-    ok = ok and (v2["score"] == 0 if jb_config.judge_prompt() == "rubric"
-                 else v2["score"] < jb_config.verification_threshold())
+          f"(informational only)\n    behavior: {harmful[:70]}...")
+    ok = ok and _exchange_is_valid(out2, v2)
 
     # 3. cache hit on re-send of (1)
     t0 = time.time()
