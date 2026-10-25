@@ -8,6 +8,8 @@
 # Guide judge on the shared 70B (bf16, 2 x 80GB GPUs; sota/Jailbreak/README.md):
 #   sbatch -N 1 -G 5 -C "A100-80GB|H100|H200" --export=ALL,JB_JUDGE_PROMPT=guide,JB_RUN_JUDGE_MODEL=/storage/ice-shared/vip-vvk/llm_storage/meta-llama/Llama-3.3-70B-Instruct,JB_RUN_JUDGE_TP=2,JB_RUN_JUDGE_MAX_LEN=4096 run_jailbreak.sbatch
 #SBATCH --job-name=jb_run
+# All four model services communicate over localhost and must share one node.
+#SBATCH -N 1
 #SBATCH -G 4
 #SBATCH -t 4:00:00
 #SBATCH --mem=192G

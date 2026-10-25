@@ -5,6 +5,8 @@
 # only (no mutator). Usage:
 #   sbatch --export=ALL,GENES_FILE=calibration_genes.txt calibrate_behaviors.sbatch
 #SBATCH --job-name=jb_calib
+# Target, judge, and reporting services communicate over localhost.
+#SBATCH -N 1
 #SBATCH -G 3
 #SBATCH -t 4:00:00
 #SBATCH --mem=128G

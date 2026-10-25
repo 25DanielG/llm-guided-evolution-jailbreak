@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 
 CONSTANTS = Path(__file__).parents[1] / "src" / "cfg" / "constants_jailbreak.py"
+ROOT = Path(__file__).parents[1]
 
 
 def load_constants(environment):
@@ -24,6 +25,11 @@ def load_constants(environment):
 
 
 class JailbreakRunControlTests(unittest.TestCase):
+    def test_multi_gpu_batch_jobs_require_one_node(self):
+        for script_name in ("run_jailbreak.sbatch", "calibrate_behaviors.sbatch"):
+            script = (ROOT / script_name).read_text()
+            self.assertIn("#SBATCH -N 1", script)
+
     def test_production_population_defaults_are_unchanged(self):
         values = load_constants({})
 
