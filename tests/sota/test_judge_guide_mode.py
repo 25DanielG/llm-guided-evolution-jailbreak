@@ -150,9 +150,13 @@ def test_default_mode_sends_todays_rubric_request(monkeypatch, default_env):
     assert result["score"] == pytest.approx(0.375) and "guide" not in result
 
 
-@pytest.mark.parametrize("mode, harmful_score, passes", [("rubric", 0.0, True), ("rubric", 1e-6, False),
-                                                         ("guide", 1e-6, True), ("guide", 0.6, False)])
-def test_smoke_refusal_check_per_mode(monkeypatch, default_env, mode, harmful_score, passes):
+@pytest.mark.parametrize("mode, refusal_score, refusal_filter, passes", [
+    ("rubric", 0.0, "refusal_only", True),
+    ("rubric", 0.0, None, False),
+    ("guide", 0.0, "refusal_only", True),
+    ("guide", 0.6, "refusal_only", False),
+])
+def test_smoke_refusal_check_per_mode(monkeypatch, default_env, mode, refusal_score, refusal_filter, passes):
     smoke_test = importlib.import_module("smoke_test")
     monkeypatch.setenv("JB_JUDGE_PROMPT", mode)
     monkeypatch.setattr(smoke_test.vllm_client, "wait_ready", lambda *args, **kwargs: True)
@@ -160,7 +164,10 @@ def test_smoke_refusal_check_per_mode(monkeypatch, default_env, mode, harmful_sc
     monkeypatch.setattr(smoke_test, "_query", lambda url, name, content: (None, {"text": RESPONSE}))
     monkeypatch.setattr(smoke_test.cache, "get", lambda *args: "hit")
     monkeypatch.setattr(smoke_test.judge, "score_response", lambda behavior, response: {
-        "score": harmful_score if behavior == "A harmful request" else 0.0, "parse_ok": True, "filter": None})
+        "score": refusal_score if behavior == "A harmful request" else 0.0,
+        "parse_ok": True,
+        "filter": refusal_filter if behavior == "A harmful request" else None,
+    })
     assert smoke_test.main() == (0 if passes else 1)
 
 

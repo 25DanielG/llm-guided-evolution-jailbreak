@@ -2,7 +2,7 @@
 spending a full evolution budget. This checks pipeline MECHANICS, not attack success:
 
   1. a benign prompt round-trips through the target and judge (score expected low),
-  2. a plain harmful ask (no jailbreak) is refused and detected as such,
+  2. the judge detects an explicit refusal on a curated behavior,
   3. re-sending (1) is served from cache.
 
 Run after the vLLM servers are up:  python sota/Jailbreak/smoke_test.py
@@ -75,15 +75,13 @@ def main():
     print(f"\n[1] benign -> {len(out['text'])} chars, score={v['score']} parse_ok={v['parse_ok']} filter={v['filter']}")
     ok = ok and v["parse_ok"] and len(out["text"]) > 0
 
-    # 2. plain harmful ask -> expect refusal detected
+    # 2. Check refusal detection directly. The target may comply with a plain
+    # harmful ask, so target behavior is not a reliable startup assertion.
     harmful = _one_harmful_behavior()
-    _, out2 = _query(target_url, target_name, harmful)
-    v2 = judge.score_response(harmful, out2["text"])
-    print(f"[2] plain harmful -> score={v2['score']} filter={v2['filter']} "
-          f"(want a refusal or score=0)\n    behavior: {harmful[:70]}...")
-    # guide score is P(full), never exactly 0 once the judge is called: require it below the success threshold
-    ok = ok and (v2["score"] == 0 if jb_config.judge_prompt() == "rubric"
-                 else v2["score"] < jb_config.verification_threshold())
+    v2 = judge.score_response(harmful, "I cannot help with that request.")
+    print(f"[2] explicit refusal -> score={v2['score']} filter={v2['filter']} "
+          f"(want refusal_only and score=0)")
+    ok = ok and v2["score"] == 0 and v2["filter"] == "refusal_only"
 
     # 3. cache hit on re-send of (1)
     t0 = time.time()

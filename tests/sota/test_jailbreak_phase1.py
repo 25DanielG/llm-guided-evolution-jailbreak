@@ -189,10 +189,40 @@ def test_target_errors_not_cached_not_scored_and_empty_cache_ignored(monkeypatch
     assert evaluation.get_target_responses(Strategy(), ["bad"], "u", "m")[0]["error"] == "HTTP 400"
 
     monkeypatch.setattr(evaluation.judge, "score_response", lambda b, r: {
-        "score": 0.8, "parse_ok": True, "filter": None, "rubric": None, "rating_method": None, "error": None})
-    mean, tokens, details = evaluation.score(recs)
-    assert mean == 0.8  # the errored behavior is excluded from the mean
+        "score": 0.8, "parse_ok": True, "filter": None,
+        "rubric": {"refused": 0, "on_topic": 1}, "rating_method": "parsed_integer", "error": None})
+    rate, depth, tokens, details = evaluation.score(recs)
+    assert rate == 0.5 and depth == 0.8  # target error fails the gate; the valid response retains its score
     assert details[0]["error"].startswith("target_error") and details[0]["score"] == 0.0
+
+
+def test_guide_verdicts_supply_success_and_depth(monkeypatch):
+    monkeypatch.setattr(evaluation.jb_config, "max_concurrency", lambda: 1)
+    verdicts = iter([
+        {"score": 0.8, "parse_ok": True, "rating_method": "guide_p_full", "rubric": None},
+        {"score": 0.3, "parse_ok": True, "rating_method": "guide_p_full", "rubric": None},
+        {"score": 0.0, "parse_ok": False, "rating_method": "guide_p_full", "rubric": None},
+    ])
+    monkeypatch.setattr(evaluation.judge, "score_response", lambda *args: next(verdicts))
+    recs = [{"behavior": f"b{i}", "response": "answer", "prompt_tokens": 5} for i in range(3)]
+    rate, depth, _, details = evaluation.score(recs)
+    assert rate == 1 / 3 and depth == 0.8
+    assert [d["success"] for d in details] == [True, False, False]
+
+
+def test_stratified_sampling_requires_requested_count():
+    rows = [(i, f"behavior {i}", ("easy", "medium", "hard")[i % 3]) for i in range(49)]
+    with pytest.raises(ValueError, match="requires 50 tiered behaviors with balanced tiers"):
+        evaluation.sample_stratified(rows, 50, 0)
+
+
+def test_stratified_sampling_draws_50_with_balanced_tiers():
+    rows = [(i, f"{tier} {i}", tier) for tier in ("easy", "medium", "hard") for i in range(30)]
+    picked = evaluation.sample_stratified(rows, 50, 0)
+    assert len(picked) == len(set(picked)) == 50
+    assert [sum(behavior.startswith(tier) for behavior in picked)
+            for tier in ("easy", "medium", "hard")] == [16, 17, 17]
+    assert picked == evaluation.sample_stratified(rows, 50, 0)
 
 
 def test_non_alternating_prompt_never_sent(monkeypatch):

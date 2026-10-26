@@ -157,7 +157,7 @@ NUM_EOT_ELITES = 10
 GENERATION = 0
 PROB_QC = 0.0
 PROB_EOT = 0.0
-num_generations = 17  # migration_gen=0 -> loop uses range(start_gen, num_generations); resuming from gen 8 reaches gen 16
+num_generations = int(os.getenv("JB_NUM_GENERATIONS", "17"))  # gen 0 is the seed population; 10 ends at gen 9
 start_population_size = 24
 population_size = 24
 crossover_probability = 0.15

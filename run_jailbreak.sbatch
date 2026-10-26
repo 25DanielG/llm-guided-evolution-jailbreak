@@ -8,8 +8,12 @@
 # Guide judge on the shared 70B (bf16, 2 x 80GB GPUs; sota/Jailbreak/README.md):
 #   sbatch -N 1 -G 5 -C "A100-80GB|H100|H200" --export=ALL,JB_JUDGE_PROMPT=guide,JB_RUN_JUDGE_MODEL=/storage/ice-shared/vip-vvk/llm_storage/meta-llama/Llama-3.3-70B-Instruct,JB_RUN_JUDGE_TP=2,JB_RUN_JUDGE_MAX_LEN=4096 run_jailbreak.sbatch
 #SBATCH --job-name=jb_run
+#SBATCH --partition=coe-gpu
+#SBATCH --qos=coe-ice
+#SBATCH --constraint=H100
 #SBATCH -G 4
 #SBATCH -t 4:00:00
+#SBATCH --signal=B:USR1@300
 #SBATCH --mem=192G
 #SBATCH -c 24
 #SBATCH -o jb_run_%j.out
@@ -20,6 +24,19 @@
 # Mutator is HF server.
 set -euo pipefail
 cd "$SLURM_SUBMIT_DIR"
+RUN_ID="${RUN_ID:-jb_${SLURM_JOB_ID}}"
+JB_NUM_GENERATIONS="${JB_NUM_GENERATIONS:-17}"
+export RUN_ID JB_NUM_GENERATIONS
+if ! [[ "$JB_NUM_GENERATIONS" =~ ^[1-9][0-9]*$ ]]; then
+    echo "ERROR: JB_NUM_GENERATIONS must be a positive integer: $JB_NUM_GENERATIONS" >&2
+    exit 1
+fi
+final_gen=$((JB_NUM_GENERATIONS - 1))
+if [ -s "$RUN_ID/ckpt/checkpoint_gen_${final_gen}.pkl" ] &&
+   [ -s "$RUN_ID/global/global_gen_${final_gen}.pkl" ]; then
+    echo "Run $RUN_ID already completed generation $final_gen; no continuation needed."
+    exit 0
+fi
 module load cuda 2>/dev/null || true
 export PATH="$HOME/.local/bin:$PATH"          # uv + vllm CLIs
 export UV_CACHE_DIR="${TMPDIR:-/tmp}/uv-cache-${SLURM_JOB_ID}"
@@ -28,18 +45,21 @@ mkdir -p "$UV_CACHE_DIR"
 # FlashInfer's sampler JIT-compiles with 'ninja' (absent on nodes) -> use native sampler.
 export VLLM_USE_FLASHINFER_SAMPLER=0
 
-TARGET_MODEL="$HOME/scratch/llm_storage/Mistral-7B-Instruct-v0.2"
-LLAMA_8B="$HOME/scratch/llm_storage/Llama-3.1-8B-Instruct"
+MODEL_ROOT="${JB_RUN_MODEL_ROOT:-$(dirname "$PWD")/llm_storage}"
+TARGET_MODEL="${JB_RUN_TARGET_MODEL:-$MODEL_ROOT/Mistral-7B-Instruct-v0.2}"
+LLAMA_8B="${JB_RUN_LLAMA_8B_MODEL:-$MODEL_ROOT/Llama-3.1-8B-Instruct}"
 JUDGE_MODEL="${JB_RUN_JUDGE_MODEL:-$LLAMA_8B}"
 JUDGE_TP="${JB_RUN_JUDGE_TP:-1}"
 JUDGE_MAX_LEN="${JB_RUN_JUDGE_MAX_LEN:-}"
 JUDGE_PROMPT="${JB_JUDGE_PROMPT-rubric}"  # unset -> rubric, same as jb_config.judge_prompt()
 MUTATOR_MODEL="${JB_RUN_MUTATOR_MODEL:-$LLAMA_8B}"
-REPORTING_MODEL="$HOME/scratch/llm_storage/HarmBench-Llama-2-13b-cls"
+REPORTING_MODEL="${JB_RUN_REPORTING_MODEL:-$MODEL_ROOT/HarmBench-Llama-2-13b-cls}"
 export LOCAL=true LOCAL_LLM=true JB_JUDGE_MODE=llm JB_FULL_BEHAVIORS=0
 # 50 behaviors per gene, equal easy/medium/hard; needs `tier` in curated.csv
 # (sota/Jailbreak/stratify_behaviors.py) or eval.py raises.
 export JB_STRATIFIED=1 JB_N_BEHAVIORS_PER_EVAL=50
+export JB_BEHAVIORS_PATH="${JB_BEHAVIORS_PATH:-$PWD/sota/Jailbreak/behaviors/curated_tiered_jb_strat_base1.csv}"
+export JB_GENE_RESULTS_DIR=results
 # Fresh response/verdict cache per run so cached failures from older runs are not reused
 export JB_CACHE_DIR="${JB_CACHE_DIR:-$HOME/scratch/jb_cache_${RUN_ID:-jb_${SLURM_JOB_ID}}}"
 export JB_TARGET_MODEL_PATH="$TARGET_MODEL"
@@ -47,6 +67,10 @@ export JB_JUDGE_MODEL_PATH="$JUDGE_MODEL"
 export JB_REPORTING_MODEL_PATH="$REPORTING_MODEL"
 export JB_REPORTING_SERVED_NAME="cais/HarmBench-Llama-2-13b-cls"
 export JB_MUTATOR_MODEL_PATH="$MUTATOR_MODEL"
+
+uv run python sota/Jailbreak/preflight_behaviors.py
+uv run python sota/Jailbreak/preflight_models.py \
+    "$TARGET_MODEL" "$JUDGE_MODEL" "$REPORTING_MODEL" "$MUTATOR_MODEL"
 
 HOST=$(hostname)
 
@@ -80,6 +104,10 @@ REPORTING_DEV="${GPU_IDS[JUDGE_TP + 1]}"
 MUTATOR_DEV="${GPU_IDS[JUDGE_TP + 2]}"
 echo "Slurm gave GPUs: $CUDA_VISIBLE_DEVICES -> target=$TARGET_DEV judge=$JUDGE_DEV reporting=$REPORTING_DEV mutator=$MUTATOR_DEV"
 echo "Judge: $JUDGE_MODEL (tp=$JUDGE_TP, prompt=$JUDGE_PROMPT); mutator: $MUTATOR_MODEL"
+for gpu_id in "${GPU_IDS[@]:0:NEED_GPUS}"; do
+    echo "Checking CUDA allocation on GPU $gpu_id"
+    env CUDA_VISIBLE_DEVICES="$gpu_id" uv run python sota/Jailbreak/preflight_cuda.py
+done
 JUDGE_EXTRA_ARGS=""
 # Multi-GPU vLLM JIT-builds FlashInfer all-reduce kernels with 'ninja' (not on PATH here): use vLLM's own
 # all-reduce, and eager mode so the compile-time all-reduce fusion pass doesn't build one either.
@@ -144,6 +172,37 @@ MUT_PID=$(start_with_retry "mutator" mutator.log \
 cleanup() { kill "$TARGET_PID" "$JUDGE_PID" "$REPORTING_PID" "$MUT_PID" 2>/dev/null || true; }
 trap cleanup EXIT
 
+# Slurm warns the batch shell five minutes before the walltime. Queue the next
+# allocation then; it starts after this job exits and resumes from the latest
+# generation checkpoint. If this job finishes meanwhile, the next job exits
+# at the completion check above without starting model servers.
+queue_continuation() {
+    if [ -s "$RUN_ID/ckpt/checkpoint_gen_${final_gen}.pkl" ] &&
+       [ -s "$RUN_ID/global/global_gen_${final_gen}.pkl" ]; then
+        return
+    fi
+    if [ "${CONTINUATION_QUEUED:-0}" = 1 ]; then
+        return
+    fi
+    local attempt
+    local submit_args=(--dependency="afterany:${SLURM_JOB_ID}"
+                       --export="ALL,RUN_ID=$RUN_ID,JB_NUM_GENERATIONS=$JB_NUM_GENERATIONS")
+    if [ -n "${JB_RUN_EXCLUDE_NODES:-}" ]; then
+        submit_args+=(--exclude="$JB_RUN_EXCLUDE_NODES")
+    fi
+    for attempt in 1 2 3; do
+        if sbatch "${submit_args[@]}" "$SLURM_SUBMIT_DIR/run_jailbreak.sbatch"; then
+            CONTINUATION_QUEUED=1
+            echo "Queued continuation for $RUN_ID after job $SLURM_JOB_ID"
+            return
+        fi
+        echo "Continuation submission failed (attempt $attempt/3)" >&2
+        sleep 10
+    done
+    echo "ERROR: could not queue continuation for $RUN_ID" >&2
+}
+trap queue_continuation USR1
+
 # wait for all four to be ready; fail fast if a server process dies instead of
 # spinning on curl for the whole walltime (bit us on a MIG node above).
 wait_or_die() {
@@ -165,11 +224,26 @@ echo "Judge ready. Waiting for reporting vLLM..."
 wait_or_die "http://$HOST:8003/v1/models" "$REPORTING_PID" "reporting vLLM" sota/Jailbreak/reporting_vllm.out
 echo "Reporting ready. Waiting for mutator..."
 wait_or_die "http://$HOST:8137/" "$MUT_PID" "mutator" mutator.log
-echo "Mutator ready. Starting evolution."
+echo "Mutator ready. Running smoke test."
+uv run python sota/Jailbreak/smoke_test.py
+echo "Smoke test passed. Starting evolution."
 
 # run's checkpoint/global dirs
-RUN_ID="${RUN_ID:-jb_${SLURM_JOB_ID}}"
 uv run python run_improved.py --checkpoints "${RUN_ID}/ckpt" --global_path "${RUN_ID}/global" \
-    --llm_model llama3 --prompt_group Jailbreak/traits --run-id "$RUN_ID"
+    --llm_model llama3 --prompt_group Jailbreak/traits --run-id "$RUN_ID" &
+EVOLUTION_PID=$!
+# Bash handles USR1 promptly while waiting for a background child. A trapped
+# signal interrupts wait, so continue waiting for evolution to finish or time out.
+while true; do
+    if wait "$EVOLUTION_PID"; then
+        break
+    else
+        wait_status=$?
+        if kill -0 "$EVOLUTION_PID" 2>/dev/null; then
+            continue
+        fi
+        exit "$wait_status"
+    fi
+done
 
 echo "=== run complete ==="

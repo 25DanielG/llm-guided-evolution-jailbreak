@@ -67,4 +67,5 @@ hostname.log
 notebook.md
 *.png
 *.csv
+!sota/Jailbreak/behaviors/curated_tiered_jb_strat_base1.csv
 jailbreak_card_*.md
