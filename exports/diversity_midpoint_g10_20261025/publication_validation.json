@@ -1,0 +1,11 @@
+{
+  "status": "passed",
+  "runs": 10,
+  "first_generation": 0,
+  "last_generation": 10,
+  "png_files": 18,
+  "pdf_files": 19,
+  "atlas_pages": 10,
+  "input_and_output_checksums": "matched",
+  "readme_links": "all local new-gallery links resolve"
+}

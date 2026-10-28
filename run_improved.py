@@ -539,7 +539,7 @@ def check4results(gene_id):
         out_dir = os.path.join(OUTPUT_DIR, str(GENERATION))
         # The job saves the model results to a file f'{gene_id}_results.csv'
         # results_path = os.path.join(out_dir, f'{gene_id}_results.csv')
-        results_path = f'{SOTA_ROOT}/results/{gene_id}_results.csv'
+        results_path = os.path.join(os.getenv('JB_GENE_RESULTS_DIR', os.path.join(SOTA_ROOT, 'results')), f'{gene_id}_results.csv')
         with open(results_path, 'r') as file:
             lines = file.readlines()
         # Skip header line (first line) and parse data line (second line)
@@ -578,7 +578,7 @@ _TOKEN_RE = re.compile(r"\w+")
 def _rendered_text_for_gene(gene_id):
     """Concatenate a gene's rendered prompt text from its per-behavior sidecar
     JSON (written by eval.py). Returns "" if unavailable."""
-    path = os.path.join(SOTA_ROOT, "results", f"{gene_id}_results.json")
+    path = os.path.join(os.getenv("JB_GENE_RESULTS_DIR", os.path.join(SOTA_ROOT, "results")), f"{gene_id}_results.json")
     try:
         with open(path) as f:
             data = json.load(f)
@@ -1033,7 +1033,7 @@ def save_checkpoint(gen, folder_name="checkpoints", global_path=None, checkpoint
     if global_path is not None:
         os.makedirs(global_path, exist_ok=True)
         global_file = os.path.join(global_path, f'global_gen_{gen}.pkl')
-        if os.path.exists(global_file):
+        if os.path.exists(global_file) and not os.getenv("JB_EXPERIMENT_ROOT"):
             with open(global_file, "rb") as file:
                 try:
                     stored_global_data = pickle.load(file)
@@ -1067,6 +1067,9 @@ def save_checkpoint(gen, folder_name="checkpoints", global_path=None, checkpoint
             "population": population,
             "hof": hof, 
         }
+    if os.getenv('JB_EXPERIMENT_ROOT'):
+        from analysis.experiments.runtime import rng_state
+        checkpoint_data['rng_state'] = rng_state()
     filename = os.path.join(folder_name, f'checkpoint_gen_{gen}.pkl')
     with open(filename, 'wb') as file:
         pickle.dump(checkpoint_data, file)
@@ -1166,8 +1169,39 @@ if __name__ == "__main__":
     parser.add_argument('--global_path', type=str, help='Path to global variables', default=ROOT_DIR)
     parser.add_argument('--prompt_group', type=str, help='Prompt group or glob (relative to templates/)', default=None)
     parser.add_argument('--run-id', type=str, default=RUN_ID)
-    # Parse the arguments
+    parser.add_argument('--experiment-manifest')
+    parser.add_argument('--initial-population')
+    parser.add_argument('--subset')
+    parser.add_argument('--evolution-seed', type=int, default=42)
+    parser.add_argument('--final-generation', type=int, default=5)
+    parser.add_argument('--freeze-initial', help='Create initial strategies without fitness evaluation, then exit')
     args = parser.parse_args()
+    experiment_root = os.getenv('JB_EXPERIMENT_ROOT')
+    if args.experiment_manifest or args.freeze_initial:
+        if not experiment_root:
+            raise ValueError('Experiment entrypoints require JB_EXPERIMENT_ROOT')
+        from pathlib import Path
+        from analysis.experiments import runtime as experiment_runtime
+        experiment_runtime.seed_runtime(args.evolution_seed)
+        OUTPUT_DIR = os.path.join(experiment_root, 'jobs')
+        VARIANT_DIR = os.path.join(experiment_root, 'models')
+        SLURM_OUTPUT_PATH = os.path.join(experiment_root, 'slurm') + '/'
+        os.makedirs(os.path.join(OUTPUT_DIR, str(GENERATION)), exist_ok=True)
+        os.makedirs(VARIANT_DIR, exist_ok=True)
+        os.makedirs(SLURM_OUTPUT_PATH, exist_ok=True)
+    if args.experiment_manifest:
+        if not args.initial_population or not args.subset or args.final_generation < 0:
+            raise ValueError('Experiment requires initial population, subset, and nonnegative final generation')
+        experiment_config = experiment_runtime.configuration(
+            args.experiment_manifest, args.initial_population, args.subset, args.evolution_seed)
+        experiment_config['operator_settings'] = {'llm_model': args.llm_model, 'prompt_group': args.prompt_group,
+            'start_population_size': start_population_size, 'population_size': population_size,
+            'fitness_weights': list(FITNESS_WEIGHTS), 'crossover_probability': crossover_probability,
+            'mutation_probability': mutation_probability, 'num_elites': num_elites,
+            'service_seed_control': 'service defaults; remote generation is not guaranteed deterministic'}
+        run_hash = experiment_runtime.bind_run(experiment_root, experiment_config)
+        num_generations = args.final_generation + 1
+
     RUN_ID = args.run_id
     llm_model = args.llm_model
 
@@ -1181,7 +1215,26 @@ if __name__ == "__main__":
         print("Error in Island Generation: No LLM specified. Exiting script")
         exit(1)
 
-    population_data, start_gen, global_data = load_checkpoint(folder_name=args.checkpoints, global_path=args.global_path)
+    if args.freeze_initial:
+        population = toolbox.population(n=start_population_size, llm_model=llm_model)
+        delayed_creation_check(population)
+        experiment_runtime.freeze_population(args.freeze_initial, population, VARIANT_DIR, GLOBAL_DATA_ANCESTRY)
+        raise SystemExit(0)
+    if args.experiment_manifest:
+        completed = experiment_runtime.latest_complete(experiment_root)
+        if completed is None:
+            population_data, start_gen, global_data = None, 1, {}
+        else:
+            population_data, start_gen, global_data = load_checkpoint(
+                folder_name=args.checkpoints, global_path=args.global_path,
+                checkpoint_file=f'checkpoint_gen_{completed}.pkl', global_file=f'global_gen_{completed}.pkl')
+            experiment_runtime.restore_rng(population_data['rng_state'])
+        # An interrupted generation may have left an uncommitted snapshot.
+        for snapshot_path in Path(experiment_root, 'snapshots').glob('*.json'):
+            if int(snapshot_path.stem) >= start_gen or completed is None:
+                snapshot_path.unlink()
+    else:
+        population_data, start_gen, global_data = load_checkpoint(folder_name=args.checkpoints, global_path=args.global_path)
     if population_data:
         box_print("CHECKPOINT LOADED")
         GLOBAL_DATA = global_data["GLOBAL_DATA"]
@@ -1193,18 +1246,30 @@ if __name__ == "__main__":
         # Create an initial population
         start_gen = 1
         box_print("CREATING POPULATION FROM SEED CODE")
-        population = toolbox.population(n=start_population_size, llm_model=llm_model)
+        if args.experiment_manifest:
+            frozen = experiment_runtime.load_initial(args.initial_population, VARIANT_DIR)
+            population = [creator.Individual([m['id']]) for m in frozen['members']]
+            GLOBAL_DATA_ANCESTRY = frozen['ancestry']
+            GLOBAL_DATA = {ind[0]: {'sub_flag': True, 'status': 'subbed file',
+                                   'fitness': None, 'job_id': None, 'start_time': time.time()} for ind in population}
+        else:
+            population = toolbox.population(n=start_population_size, llm_model=llm_model)
         box_print("Batch Checking Created Genes", print_bbox_len=60, new_line_end=False)
-        delayed_creation_check(population)
+        if not args.experiment_manifest:
+            delayed_creation_check(population)
         hof = tools.ParetoFront()
-
-    # Evaluate the entire population
-    for ind in population:
-        ind.fitness.values = PLACEHOLDER_FITNESS
 
     os.environ["JB_NUM_GENS"] = str(num_generations)
     os.environ.setdefault("JB_GEN", str(start_gen))
-    check_and_update_fitness(population)
+    if not args.experiment_manifest or population_data is None:
+        for ind in population:
+            ind.fitness.values = PLACEHOLDER_FITNESS
+        check_and_update_fitness(population)
+    if args.experiment_manifest and population_data is None:
+        experiment_runtime.snapshot(experiment_root, 0, population, VARIANT_DIR, GLOBAL_DATA_ANCESTRY, run_hash)
+        save_checkpoint(0, folder_name=args.checkpoints, global_path=args.global_path)
+        experiment_runtime.save_complete(experiment_root, 0,
+            Path(args.checkpoints) / 'checkpoint_gen_0.pkl', Path(args.global_path) / 'global_gen_0.pkl')
     # Evolution
     for gen in range(start_gen, num_generations if migration_gen == 0 else ((start_gen + migration_gen - 1) // migration_gen) * migration_gen + 1):
         CURRENT_GENERATION = gen
@@ -1223,6 +1288,8 @@ if __name__ == "__main__":
         '''
 
         box_print("CURRENT POPULATION SIZE:", len(population))
+        if args.experiment_manifest and len(population) < num_elites:
+            raise RuntimeError('Experiment population collapsed; automatic regeneration is disabled')
         while len(population) < num_elites:
             print("MINIMUM NUMBER OF IND NOT ACHIEVED, TRYING AGAIN")
             GEN_COUNT = -1
@@ -1316,7 +1383,12 @@ if __name__ == "__main__":
         # Gather all the fitnesses in one list and print the stats
         print_scores(population, FITNESS_WEIGHTS)
         hof.update(population)
+        if args.experiment_manifest:
+            experiment_runtime.snapshot(experiment_root, gen, population, VARIANT_DIR, GLOBAL_DATA_ANCESTRY, run_hash)
         save_checkpoint(gen, folder_name=args.checkpoints, global_path=args.global_path)
+        if args.experiment_manifest:
+            experiment_runtime.save_complete(experiment_root, gen,
+                Path(args.checkpoints) / f'checkpoint_gen_{gen}.pkl', Path(args.global_path) / f'global_gen_{gen}.pkl')
         LINKED_GENES = {}
         # mutate x prompts
         # mutate_prompts()

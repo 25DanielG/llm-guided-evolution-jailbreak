@@ -16,3 +16,8 @@ This folder is for post-run analysis only. Scripts here should read experiment o
 - scripts should run end-to-end
 - prefer reusable helper functions over duplicated logic
 - use descriptive snake_case filenames
+
+## Behavior coverage experiment
+
+See [the experiment guide](experiments/README.md) for fixed AdvBench subsets,
+shared held-out evaluation, generation snapshots, resume, and diversity reports.

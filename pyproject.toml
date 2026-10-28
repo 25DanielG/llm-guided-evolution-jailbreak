@@ -38,3 +38,6 @@ dependencies = [
 
 [tool.pytest.ini_options]
 junit_logging = "system-out"
+
+[project.optional-dependencies]
+diversity = ["sentence-transformers>=3.0,<6", "umap-learn>=0.5.7,<0.6", "statsmodels>=0.14,<0.15"]

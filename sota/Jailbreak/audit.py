@@ -1,5 +1,6 @@
 """Compare top candidates in a completed generation with HarmBench."""
 import argparse
+import os
 import fcntl
 import json
 from pathlib import Path
@@ -21,7 +22,7 @@ def select_top_candidates(rows, generation, limit):
 
 
 def audit(run_id, generation):
-    path = Path(__file__).resolve().parent / "results" / run_id / "candidates.jsonl"
+    path = (Path(os.environ["JB_CANDIDATE_DIR"]) if os.getenv("JB_CANDIDATE_DIR") else Path(__file__).resolve().parent / "results" / run_id) / "candidates.jsonl"
     with open(path, encoding="utf-8") as file:
         fcntl.flock(file, fcntl.LOCK_SH)
         rows = [json.loads(line) for line in file if line.strip()]

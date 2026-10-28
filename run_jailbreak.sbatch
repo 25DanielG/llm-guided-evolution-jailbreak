@@ -1,30 +1,35 @@
 #!/bin/bash
-# Production topology: 1 GPU target, 1 GPU judge, 1 GPU reporting (HarmBench,
-# verification/audit only), 1 GPU mutator.
+# Production topology: 1 GPU target, 2 GPUs judge, 1 GPU reporting (HarmBench,
+# verification/audit only), 2 GPUs mutator.
 # Adjust Slurm allocation and groups together if using a different GPU type.
 #SBATCH --job-name=jb_run
-#SBATCH -G 4
-#SBATCH -t 4:00:00
+#SBATCH -G 6
+#SBATCH -t 2:40:00
 #SBATCH --mem=192G
 #SBATCH -c 24
 #SBATCH -o jb_run_%j.out
 
-# Target weaker model, for a first ASR>0 validation; judge + reporting are
-# separate models from the target (and from each other) to avoid a model
-# judging its own outputs. Each get their own vLLM server on a different GPU.
-# Mutator is HF server.
+# Llama-3.1-8B target, Llama-3.3-70B judge/mutator, HarmBench reporter.
+# Each service has its own GPU group; the mutator uses the HF server.
 set -euo pipefail
 cd "$SLURM_SUBMIT_DIR"
 module load cuda 2>/dev/null || true
 export PATH="$HOME/.local/bin:$PATH"          # uv + vllm CLIs
+VLLM_TOOL_BIN="$(dirname "$(readlink -f "$(command -v vllm)")")"
+export PATH="$VLLM_TOOL_BIN:$PATH"
+if ! command -v ninja >/dev/null 2>&1; then
+    echo "vLLM requires ninja to compile GPU kernels, but ninja is not on PATH" >&2
+    exit 1
+fi
+echo "Using ninja: $(command -v ninja) ($(ninja --version))"
 export UV_CACHE_DIR="${TMPDIR:-/tmp}/uv-cache-${SLURM_JOB_ID}"
 mkdir -p "$UV_CACHE_DIR"
 
 # FlashInfer's sampler JIT-compiles with 'ninja' (absent on nodes) -> use native sampler.
 export VLLM_USE_FLASHINFER_SAMPLER=0
 
-TARGET_MODEL="$HOME/scratch/llm_storage/Mistral-7B-Instruct-v0.2"
-JUDGE_MODEL="$HOME/scratch/llm_storage/Llama-3.1-8B-Instruct"
+TARGET_MODEL="${JB_TARGET_MODEL_PATH:-$HOME/scratch/llm_storage/Llama-3.1-8B-Instruct}"
+JUDGE_MODEL="${JB_JUDGE_MODEL_PATH:-/storage/ice-shared/vip-vvk/llm_storage/meta-llama/Llama-3.3-70B-Instruct}"
 REPORTING_MODEL="$HOME/scratch/llm_storage/HarmBench-Llama-2-13b-cls"
 export LOCAL=true LOCAL_LLM=true JB_JUDGE_MODE=llm JB_FULL_BEHAVIORS=0
 # 50 behaviors per gene, equal easy/medium/hard; needs `tier` in curated.csv
@@ -34,19 +39,19 @@ export JB_TARGET_MODEL_PATH="$TARGET_MODEL"
 export JB_JUDGE_MODEL_PATH="$JUDGE_MODEL"
 export JB_REPORTING_MODEL_PATH="$REPORTING_MODEL"
 export JB_REPORTING_SERVED_NAME="cais/HarmBench-Llama-2-13b-cls"
-export JB_MUTATOR_MODEL_PATH="$JUDGE_MODEL"
+export JB_MUTATOR_MODEL_PATH="${JB_MUTATOR_MODEL_PATH:-/storage/ice-shared/vip-vvk/llm_storage/meta-llama/Llama-3.3-70B-Instruct}"
 
 HOST=$(hostname)
 
 IFS=',' read -ra GPU_IDS <<< "$CUDA_VISIBLE_DEVICES"
-if [ "${#GPU_IDS[@]}" -lt 4 ]; then
-    echo "ERROR: expected 4 GPUs from Slurm, got: $CUDA_VISIBLE_DEVICES" >&2
+if [ "${#GPU_IDS[@]}" -lt 6 ]; then
+    echo "ERROR: expected 6 GPUs from Slurm, got: $CUDA_VISIBLE_DEVICES" >&2
     exit 1
 fi
 TARGET_DEV="${GPU_IDS[0]}"
-JUDGE_DEV="${GPU_IDS[1]}"
-REPORTING_DEV="${GPU_IDS[2]}"
-MUTATOR_DEV="${GPU_IDS[3]}"
+JUDGE_DEV="${GPU_IDS[1]},${GPU_IDS[2]}"
+REPORTING_DEV="${GPU_IDS[3]}"
+MUTATOR_DEV="${GPU_IDS[4]},${GPU_IDS[5]}"
 echo "Slurm gave GPUs: $CUDA_VISIBLE_DEVICES -> target=$TARGET_DEV judge=$JUDGE_DEV reporting=$REPORTING_DEV mutator=$MUTATOR_DEV"
 
 # Retry a service's own startup a few times before giving up
@@ -70,10 +75,11 @@ start_with_retry() {
     return 1
 }
 
-# target vLLM (weaker model)
+# target vLLM
 TARGET_PID=$(start_with_retry "target vLLM" sota/Jailbreak/target_vllm.out \
     env CUDA_VISIBLE_DEVICES="$TARGET_DEV" vllm serve "$TARGET_MODEL" \
     --served-model-name target --host 0.0.0.0 --port 8001 \
+    --max-model-len "${JB_TARGET_MAX_MODEL_LEN:-4096}" \
     --gpu-memory-utilization 0.9) || exit 1
 echo "$HOST:8001" > sota/Jailbreak/target_host.log
 export JB_TARGET_VLLM_URL="http://$HOST:8001/v1"
@@ -82,6 +88,7 @@ export JB_TARGET_VLLM_URL="http://$HOST:8001/v1"
 JUDGE_PID=$(start_with_retry "judge vLLM" sota/Jailbreak/judge_vllm.out \
     env CUDA_VISIBLE_DEVICES="$JUDGE_DEV" vllm serve "$JUDGE_MODEL" \
     --served-model-name judge --host 0.0.0.0 --port 8002 \
+    --tensor-parallel-size 2 --max-model-len "${JB_JUDGE_MAX_MODEL_LEN:-4096}" \
     --gpu-memory-utilization 0.9) || exit 1
 echo "$HOST:8002" > sota/Jailbreak/judge_host.log
 export JB_JUDGE_VLLM_URL="http://$HOST:8002/v1"

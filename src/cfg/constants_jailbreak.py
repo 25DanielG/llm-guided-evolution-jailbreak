@@ -58,7 +58,7 @@ ISLAND_LLMS = [LLM_QWEN, LLM_MIXTRAL, LLM_DEEPSEEK, LLM_LLAMA3, LLM_GEMMA2, LLM_
 
 ENVIRONMENT_DIR = os.path.join(ROOT_DIR, ".venv")
 LOCAL_LLM = os.getenv("LOCAL_LLM", "true").lower() in ("true", "1", "yes")
-HOSTNAME_DIR = os.path.join(ROOT_DIR, "hostname.log")
+HOSTNAME_DIR = os.getenv("LLMGE_HOSTNAME_PATH", os.path.join(ROOT_DIR, "hostname.log"))
 
 # multi-island settings
 GLOBAL_DATA_PATH = "global_data"
@@ -90,7 +90,7 @@ TARGET_VLLM_PORT = int(os.getenv("JB_TARGET_VLLM_PORT", "8001"))
 
 JUDGE_MODEL_PATH = os.getenv(
     "JB_JUDGE_MODEL_PATH",
-    os.path.join(os.path.expanduser("~"), "scratch/llm_storage/Llama-3.1-8B-Instruct"),
+    "/storage/ice-shared/vip-vvk/llm_storage/meta-llama/Llama-3.3-70B-Instruct/",
 )
 JUDGE_SERVED_NAME = os.getenv("JB_JUDGE_SERVED_NAME", "judge")
 JUDGE_VLLM_PORT = int(os.getenv("JB_JUDGE_VLLM_PORT", "8002"))
