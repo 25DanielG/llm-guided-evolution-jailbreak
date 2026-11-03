@@ -1114,6 +1114,8 @@ def load_checkpoint(folder_name="checkpoints", checkpoint_file=None, global_path
 
     return population_data, start_gen, global_data
 
+from src.survival import nsga2_survival
+
 def true_nsga2(pop, k):
     pop = tools.selNSGA2(pop, len(pop)) # 10 diff
     k = k // 4 * 4
@@ -1158,6 +1160,9 @@ _selection_method = globals().get("SELECTION_METHOD", "nsga2")
 if _selection_method not in _SELECTORS:
     raise ValueError(f"Unknown SELECTION_METHOD {_selection_method!r}; expected one of {list(_SELECTORS)}")
 toolbox.register("select", _SELECTORS[_selection_method])
+_survival_method = globals().get("SURVIVAL_METHOD", "generational")
+if _survival_method not in ("generational", "nsga2"):
+    raise ValueError(f"Unknown SURVIVAL_METHOD {_survival_method!r}; expected 'generational' or 'nsga2'")
 
 # TODO: start using percent diff of train acc vs val test acc as an over fitt metric 
 
@@ -1332,6 +1337,17 @@ if __name__ == "__main__":
             subprocess.run(["uv", "run", "python", os.path.join(SOTA_ROOT, "audit.py"),
                             "--run-id", RUN_ID, "--generation", str(gen)], check=True)
         GLOBAL_DATA_HIST.update(GLOBAL_DATA.copy())
+        if _survival_method == "nsga2":
+            # (mu + lambda): old population and new offspring compete on the
+            # objectives; lexicase only chose the parents above.
+            _invalid = {tuple(INVALID_FITNESS_MAX), tuple(PLACEHOLDER_FITNESS)}
+            offspring = nsga2_survival(
+                population, offspring, population_size,
+                key_fn=lambda ind: ind[0],
+                is_valid=lambda ind: ind.fitness.valid and tuple(ind.fitness.values) not in _invalid,
+                select_fn=tools.selNSGA2,
+                refresh_fn=apply_diversity_objective)
+            print(f"NSGA-II survival kept {len(offspring)} genes")
         # Replace the old population with the offspring
         population[:] = offspring
         # Gather all the fitnesses in one list and print the stats

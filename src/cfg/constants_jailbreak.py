@@ -178,6 +178,7 @@ DIVERSITY_OBJ_INDEX = 1
 SELECTION_METHOD = os.getenv("JB_SELECTION", "nsga2").lower()
 # "mad" = per-case median absolute deviation, or a float applied to every case.
 LEXICASE_EPSILON = os.getenv("JB_LEXICASE_EPSILON", "mad")
+SURVIVAL_METHOD = os.getenv("JB_SURVIVAL", "generational").lower()
 """
 Misc. Non-sense
 """
