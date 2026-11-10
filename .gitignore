@@ -68,3 +68,5 @@ notebook.md
 *.png
 *.csv
 jailbreak_card_*.md
+
+.ci-venv/

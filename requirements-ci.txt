@@ -1,0 +1,15 @@
+# Ordinary CPU tests only. Production environments still use pyproject.toml.
+# Install with uv pip --torch-backend=cpu, never into a shared serving environment.
+torch==2.6.0
+numpy==2.3.3
+pandas==2.3.2
+scikit-learn==1.7.2
+imbalanced-learn==0.14.0
+transformers==4.56.2
+google-genai==1.39.0
+fastapi==0.117.1
+pytest==8.4.2
+PyYAML==6.0.3
+requests==2.32.5
+deap==1.4.3
+flake8==7.3.0

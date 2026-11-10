@@ -38,3 +38,9 @@ dependencies = [
 
 [tool.pytest.ini_options]
 junit_logging = "system-out"
+markers = [
+    "mock_inference: deterministic fixtures exercise real pipeline code without a model",
+    "live_inference: real model requests; requires --run-live-inference and an authorized service",
+    "gpu: GPU validation; requires --run-gpu and an existing allocation",
+    "dataset: external dataset/training validation; requires --run-dataset and prepared local data",
+]
