@@ -22,7 +22,13 @@
 # Mutator is HF server.
 set -euo pipefail
 cd "$SLURM_SUBMIT_DIR"
-module load cuda 2>/dev/null || true
+if [[ -n "${JB_RUN_TARGET_PROFILE:-}${JB_RUN_JUDGE_PROFILE:-}${JB_RUN_MUTATOR_PROFILE:-}" ]]; then
+    : "${JB_VLLM_BIN:?Profiles require the approved shared serving environment bin/vllm}"
+    : "${JB_CUDA_MODULE:?Profiles require the CUDA module verified for that environment}"
+    module load "$JB_CUDA_MODULE"
+else
+    module load cuda 2>/dev/null || true
+fi
 export PATH="$HOME/.local/bin:$PATH"          # uv + vllm CLIs
 export UV_CACHE_DIR="${TMPDIR:-/tmp}/uv-cache-${SLURM_JOB_ID}"
 mkdir -p "$UV_CACHE_DIR"
@@ -30,7 +36,7 @@ mkdir -p "$UV_CACHE_DIR"
 # FlashInfer's sampler JIT-compiles with 'ninja' (absent on nodes) -> use native sampler.
 export VLLM_USE_FLASHINFER_SAMPLER=0
 
-TARGET_MODEL="$HOME/scratch/llm_storage/Mistral-7B-Instruct-v0.2"
+TARGET_MODEL="${JB_RUN_TARGET_MODEL:-$HOME/scratch/llm_storage/Mistral-7B-Instruct-v0.2}"
 LLAMA_8B="$HOME/scratch/llm_storage/Llama-3.1-8B-Instruct"
 JUDGE_MODEL="${JB_RUN_JUDGE_MODEL:-$LLAMA_8B}"
 JUDGE_TP="${JB_RUN_JUDGE_TP:-1}"
@@ -38,6 +44,32 @@ JUDGE_MAX_LEN="${JB_RUN_JUDGE_MAX_LEN:-}"
 JUDGE_PROMPT="${JB_JUDGE_PROMPT-rubric}"  # unset -> rubric, same as jb_config.judge_prompt()
 MUTATOR_MODEL="${JB_RUN_MUTATOR_MODEL:-$LLAMA_8B}"
 REPORTING_MODEL="$HOME/scratch/llm_storage/HarmBench-Llama-2-13b-cls"
+# Opt-in registry profiles. Legacy path overrides retain their original behavior.
+TARGET_PROFILE="${JB_RUN_TARGET_PROFILE:-}"
+JUDGE_PROFILE="${JB_RUN_JUDGE_PROFILE:-}"
+MUTATOR_PROFILE="${JB_RUN_MUTATOR_PROFILE:-}"
+TARGET_TP=1
+MUTATOR_TP=1
+if [[ -n "$TARGET_PROFILE" ]]; then
+    TARGET_MODEL=$(python3 -m src.model_serving path --model "$TARGET_PROFILE")
+    TARGET_TP=$(python3 -m src.model_serving tp --model "$TARGET_PROFILE")
+    export JB_TARGET_PROFILE="$TARGET_PROFILE"
+fi
+if [[ -n "$JUDGE_PROFILE" ]]; then
+    JUDGE_MODEL=$(python3 -m src.model_serving path --model "$JUDGE_PROFILE")
+    JUDGE_TP=$(python3 -m src.model_serving tp --model "$JUDGE_PROFILE")
+    export JB_JUDGE_PROFILE="$JUDGE_PROFILE"
+    if [[ "$JUDGE_PROMPT" == guide && "$JUDGE_PROFILE" != llama-3.3-70b ]]; then
+        echo "ERROR: guide judge is validated only with llama-3.3-70b; use rubric for new models" >&2
+        exit 1
+    fi
+fi
+if [[ -n "$MUTATOR_PROFILE" ]]; then
+    MUTATOR_MODEL=$(python3 -m src.model_serving path --model "$MUTATOR_PROFILE")
+    MUTATOR_TP=$(python3 -m src.model_serving tp --model "$MUTATOR_PROFILE")
+    export JB_MUTATOR_PROFILE="$MUTATOR_PROFILE"
+fi
+
 export LOCAL=true LOCAL_LLM=true JB_JUDGE_MODE=llm
 
 # A fresh checkout has no earlier candidates from which to derive behavior
@@ -103,16 +135,16 @@ if [ "$JUDGE_PROMPT" = rubric ] && [ "$JUDGE_MODEL" != "$LLAMA_8B" ]; then
     echo "Non-default rubric judge: verdict + response cache at $JB_CACHE_DIR"
 fi
 # target, JUDGE_TP judge GPUs, reporting, mutator
-NEED_GPUS=$((JUDGE_TP + 3))
+NEED_GPUS=$((TARGET_TP + JUDGE_TP + 1 + MUTATOR_TP))
 IFS=',' read -ra GPU_IDS <<< "$CUDA_VISIBLE_DEVICES"
 if [ "${#GPU_IDS[@]}" -lt "$NEED_GPUS" ]; then
-    echo "ERROR: expected $NEED_GPUS GPUs from Slurm (judge tp=$JUDGE_TP; use sbatch -G $NEED_GPUS), got: $CUDA_VISIBLE_DEVICES" >&2
+    echo "ERROR: expected $NEED_GPUS GPUs from Slurm (target=$TARGET_TP judge=$JUDGE_TP reporting=1 mutator=$MUTATOR_TP), got: $CUDA_VISIBLE_DEVICES" >&2
     exit 1
 fi
-TARGET_DEV="${GPU_IDS[0]}"
-JUDGE_DEV=$(IFS=','; echo "${GPU_IDS[*]:1:JUDGE_TP}")
-REPORTING_DEV="${GPU_IDS[JUDGE_TP + 1]}"
-MUTATOR_DEV="${GPU_IDS[JUDGE_TP + 2]}"
+TARGET_DEV=$(IFS=','; echo "${GPU_IDS[*]:0:TARGET_TP}")
+JUDGE_DEV=$(IFS=','; echo "${GPU_IDS[*]:TARGET_TP:JUDGE_TP}")
+REPORTING_DEV="${GPU_IDS[TARGET_TP + JUDGE_TP]}"
+MUTATOR_DEV=$(IFS=','; echo "${GPU_IDS[*]:TARGET_TP+JUDGE_TP+1:MUTATOR_TP}")
 echo "Slurm gave GPUs: $CUDA_VISIBLE_DEVICES -> target=$TARGET_DEV judge=$JUDGE_DEV reporting=$REPORTING_DEV mutator=$MUTATOR_DEV"
 echo "Judge: $JUDGE_MODEL (tp=$JUDGE_TP, prompt=$JUDGE_PROMPT); mutator: $MUTATOR_MODEL"
 JUDGE_EXTRA_ARGS=""
@@ -138,33 +170,56 @@ start_with_retry() {
             return 0
         fi
         echo "$label died on attempt $attempt (prob CUDA-init race); retrying..." >&2
-        wait "$pid" 2>/dev/null
+        wait "$pid" 2>/dev/null || true
         sleep 10
     done
     echo "ERROR: $label failed to start after 3 attempts" >&2
     return 1
 }
 
+# Validate every selected checkpoint before loading any model onto GPUs.
+for selected_profile in "$TARGET_PROFILE" "$JUDGE_PROFILE" "$MUTATOR_PROFILE"; do
+    if [[ -n "$selected_profile" ]]; then
+        python3 -m src.model_serving check --model "$selected_profile"
+    fi
+done
+TARGET_PID="" JUDGE_PID="" REPORTING_PID="" MUT_PID="" MUT_VLLM_PID=""
+cleanup() { for pid in "$TARGET_PID" "$JUDGE_PID" "$REPORTING_PID" "$MUT_PID" "$MUT_VLLM_PID"; do
+    [[ -z "$pid" ]] || kill "$pid" 2>/dev/null || true
+ done; }
+trap cleanup EXIT
+TARGET_COMMAND=("${JB_VLLM_BIN:-vllm}" serve "$TARGET_MODEL" --served-model-name target
+    --host 0.0.0.0 --port 8001 --gpu-memory-utilization 0.9)
+if [[ -n "$TARGET_PROFILE" ]]; then
+    TARGET_COMMAND=(python3 -m src.model_serving serve --model "$TARGET_PROFILE"
+        --served-name target --port 8001 --max-len "${JB_TARGET_MAX_MODEL_LEN:-4096}")
+fi
+JUDGE_COMMAND=("${JB_VLLM_BIN:-vllm}" serve "$JUDGE_MODEL" --served-model-name judge
+    --host 0.0.0.0 --port 8002 --gpu-memory-utilization 0.9)
+# Preserve the legacy judge arguments without shell evaluation.
+read -ra JUDGE_LEGACY_ARGS <<< "$JUDGE_EXTRA_ARGS"
+JUDGE_COMMAND+=("${JUDGE_LEGACY_ARGS[@]}")
+if [[ -n "$JUDGE_PROFILE" ]]; then
+    JUDGE_COMMAND=(python3 -m src.model_serving serve --model "$JUDGE_PROFILE"
+        --served-name judge --port 8002 --max-len "${JUDGE_MAX_LEN:-4096}")
+fi
+
 # target vLLM (weaker model)
 TARGET_PID=$(start_with_retry "target vLLM" sota/Jailbreak/target_vllm.out \
-    env CUDA_VISIBLE_DEVICES="$TARGET_DEV" vllm serve "$TARGET_MODEL" \
-    --served-model-name target --host 0.0.0.0 --port 8001 \
-    --gpu-memory-utilization 0.9) || exit 1
+    env CUDA_VISIBLE_DEVICES="$TARGET_DEV" "${TARGET_COMMAND[@]}") || exit 1
 echo "$HOST:8001" > sota/Jailbreak/target_host.log
 export JB_TARGET_VLLM_URL="http://$HOST:8001/v1"
 
 # judge vLLM (in-loop rubric judge; fitness-relevant)
 JUDGE_PID=$(start_with_retry "judge vLLM" sota/Jailbreak/judge_vllm.out \
-    env CUDA_VISIBLE_DEVICES="$JUDGE_DEV" vllm serve "$JUDGE_MODEL" \
-    --served-model-name judge --host 0.0.0.0 --port 8002 \
-    --gpu-memory-utilization 0.9 $JUDGE_EXTRA_ARGS) || exit 1
+    env CUDA_VISIBLE_DEVICES="$JUDGE_DEV" "${JUDGE_COMMAND[@]}") || exit 1
 echo "$HOST:8002" > sota/Jailbreak/judge_host.log
 export JB_JUDGE_VLLM_URL="http://$HOST:8002/v1"
 export JB_JUDGE_SERVED_NAME=judge
 
 # reporting vLLM (HarmBench classifier; verification/audit only, never fitness)
 REPORTING_PID=$(start_with_retry "reporting vLLM" sota/Jailbreak/reporting_vllm.out \
-    env CUDA_VISIBLE_DEVICES="$REPORTING_DEV" vllm serve "$REPORTING_MODEL" \
+    env CUDA_VISIBLE_DEVICES="$REPORTING_DEV" "${JB_VLLM_BIN:-vllm}" serve "$REPORTING_MODEL" \
     --served-model-name "$JB_REPORTING_SERVED_NAME" --host 0.0.0.0 --port 8003 \
     --gpu-memory-utilization 0.9) || exit 1
 echo "$HOST:8003" > sota/Jailbreak/reporting_host.log
@@ -172,12 +227,25 @@ export JB_REPORTING_VLLM_URL="http://$HOST:8003/v1"
 
 export SERVER_HOSTNAME=$HOST
 echo "$HOST" > hostname.log
+if [[ -n "$MUTATOR_PROFILE" ]]; then
+    MUT_VLLM_PID=$(start_with_retry "mutator vLLM" mutator_vllm.log \
+        env CUDA_VISIBLE_DEVICES="$MUTATOR_DEV" python3 -m src.model_serving serve \
+        --model "$MUTATOR_PROFILE" --port 8004 --max-len "${JB_MUTATOR_MAX_MODEL_LEN:-4096}") || exit 1
+    export JB_MUTATOR_VLLM_URL="http://$HOST:8004/v1"
+    # Proxy startup validates model identity, so wait for its backend first.
+    deadline=$((SECONDS + ${JB_SERVER_READY_TIMEOUT:-1200}))
+    until curl -sf "$JB_MUTATOR_VLLM_URL/models" >/dev/null; do
+        if ! kill -0 "$MUT_VLLM_PID" 2>/dev/null || (( SECONDS >= deadline )); then
+            tail -n 35 mutator_vllm.log >&2
+            exit 1
+        fi
+        sleep 5
+    done
+fi
 MUT_PID=$(start_with_retry "mutator" mutator.log \
     env CUDA_VISIBLE_DEVICES="$MUTATOR_DEV" uv run python -m uvicorn server:app \
     --host "$HOST" --port 8137) || exit 1
 
-cleanup() { kill "$TARGET_PID" "$JUDGE_PID" "$REPORTING_PID" "$MUT_PID" 2>/dev/null || true; }
-trap cleanup EXIT
 
 # wait for all four to be ready; fail fast if a server process dies instead of
 # spinning on curl for the whole walltime (bit us on a MIG node above).
@@ -221,6 +289,6 @@ echo "Starting evolution."
 
 # run's checkpoint/global dirs
 uv run python run_improved.py --checkpoints "${RUN_ID}/ckpt" --global_path "${RUN_ID}/global" \
-    --llm_model llama3 --prompt_group Jailbreak/traits --run-id "$RUN_ID"
+    --llm_model "${MUTATOR_PROFILE:-llama3}" --prompt_group Jailbreak/traits --run-id "$RUN_ID"
 
 echo "=== run complete ==="

@@ -32,6 +32,9 @@ CURRENT_GENERATION = 0
 AVAILABLE_LLM_MODELS = globals().get("ISLAND_LLMS", [])
 if not AVAILABLE_LLM_MODELS and globals().get("LLM_MODEL"):
     AVAILABLE_LLM_MODELS = [globals()["LLM_MODEL"]]
+from src.model_serving import registry
+# Allow explicit profiles without expanding the automatic island roster.
+AVAILABLE_LLM_MODELS = list(AVAILABLE_LLM_MODELS) + list(registry()["models"])
 
 LLM_SERVER_READY = False
 

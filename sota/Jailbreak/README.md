@@ -209,3 +209,12 @@ Run focused tests without the repository's Slurm-backed test fixture:
 ```bash
 python -m pytest tests/sota/test_jailbreak_phase1.py --confcutdir=tests/sota -q
 ```
+
+## Shared serving profiles
+
+[Shared model serving](../../docs/shared-model-serving.md) documents the manually
+maintained registry, exact IDs, native quantization, resource requirements,
+profile selectors, existing API compatibility, approval-gated staging and tests.
+GPT-OSS 20B/120B and Devstral Small 2 24B are configured with GPU testing pending.
+Use `JB_RUN_TARGET_PROFILE`, `JB_RUN_JUDGE_PROFILE`, or `JB_RUN_MUTATOR_PROFILE`
+with `run_jailbreak.sbatch`; leave them unset for the existing role defaults.

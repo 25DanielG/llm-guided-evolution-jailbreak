@@ -1,0 +1,84 @@
+{
+  "schema_version": 1,
+  "shared_model_root": "/storage/ice-shared/vip-vvk/llm_storage",
+  "models": {
+    "mistral-7b": {
+      "model_id": "mistralai/Mistral-7B-Instruct-v0.2",
+      "provider": "Mistral AI",
+      "precision": "bfloat16",
+      "tensor_parallel_size": 1,
+      "gpu_memory_note": "About 14 GB weights plus KV cache; plan >=24 GB VRAM.",
+      "status": "existing",
+      "vllm_args": [
+        "--dtype",
+        "bfloat16"
+      ],
+      "backend": "vllm",
+      "max_model_len": 4096,
+      "max_num_seqs": 8
+    },
+    "llama-3.3-70b": {
+      "model_id": "meta-llama/Llama-3.3-70B-Instruct",
+      "provider": "Meta",
+      "precision": "bfloat16",
+      "tensor_parallel_size": 2,
+      "gpu_memory_note": "About 140 GB weights plus KV cache; existing profile uses 2 x 80 GB or larger GPUs.",
+      "status": "existing",
+      "vllm_args": [
+        "--dtype",
+        "bfloat16"
+      ],
+      "backend": "vllm",
+      "max_model_len": 4096,
+      "max_num_seqs": 8
+    },
+    "gpt-oss-20b": {
+      "model_id": "openai/gpt-oss-20b",
+      "revision": "6cee5e81ee83917806bbde320786a8fb61efebee",
+      "provider": "OpenAI",
+      "precision": "native MXFP4 MoE weights",
+      "tensor_parallel_size": 1,
+      "gpu_memory_note": "Official model minimum 16 GB; shared conservative launch profile 1 x H200, context 4096, max 8 sequences.",
+      "status": "configured",
+      "reasoning": true,
+      "vllm_args": [],
+      "backend": "vllm",
+      "max_model_len": 4096,
+      "max_num_seqs": 8
+    },
+    "gpt-oss-120b": {
+      "model_id": "openai/gpt-oss-120b",
+      "revision": "b5c939de8f754692c1647ca79fbf85e8c1e70f8a",
+      "provider": "OpenAI",
+      "precision": "native MXFP4 MoE weights",
+      "tensor_parallel_size": 1,
+      "gpu_memory_note": "Official single 80 GB GPU minimum; shared conservative launch profile 1 x H200, context 4096, max 8 sequences.",
+      "status": "configured",
+      "reasoning": true,
+      "vllm_args": [],
+      "backend": "vllm",
+      "max_model_len": 4096,
+      "max_num_seqs": 8
+    },
+    "devstral-small-2-24b": {
+      "model_id": "mistralai/Devstral-Small-2-24B-Instruct-2512",
+      "revision": "55c5b41e98c2dbd21b0c8afffc540dcfc9eb5128",
+      "provider": "Mistral AI",
+      "precision": "native FP8",
+      "tensor_parallel_size": 1,
+      "gpu_memory_note": "About 24 GB weights plus runtime/KV/vision overhead; plan >=48 GB, shared conservative profile 1 x H200 at 4096 context.",
+      "status": "configured",
+      "vllm_args": [
+        "--tokenizer-mode",
+        "mistral",
+        "--config-format",
+        "mistral",
+        "--load-format",
+        "mistral"
+      ],
+      "backend": "vllm",
+      "max_model_len": 4096,
+      "max_num_seqs": 8
+    }
+  }
+}

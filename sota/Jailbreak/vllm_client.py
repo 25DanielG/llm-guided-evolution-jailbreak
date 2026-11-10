@@ -3,9 +3,13 @@ with a thread pool.
 """
 
 import time
+import sys
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
 import requests
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from src.chat_response import parse_chat_response
 
 API_KEY = "EMPTY"
 
@@ -65,12 +69,12 @@ def chat(base_url, model, messages, max_tokens=512, temperature=0.0, top_p=None,
             resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
             if resp.status_code == 200:
                 data = resp.json()
-                choice = data["choices"][0]
-                text = choice["message"]["content"] or ""
-                usage = data.get("usage", {}) or {}
-                return {"text": text, "prompt_tokens": int(usage.get("prompt_tokens", 0)),
+                parsed = parse_chat_response(data)
+                usage = parsed["usage"]
+                return {"text": parsed["text"], "prompt_tokens": int(usage.get("prompt_tokens", 0)),
                         "usage": usage, "latency_seconds": time.monotonic() - started,
-                        "logprobs": choice.get("logprobs")}
+                        "logprobs": parsed["logprobs"], "finish_reason": parsed["finish_reason"],
+                        "reasoning": parsed["reasoning"]}
             last_err = f"HTTP {resp.status_code}: {resp.text[:200]}"
         except requests.exceptions.RequestException as err:
             last_err = str(err)
