@@ -279,6 +279,9 @@ async def generate_text(request: LLMRequest):
         }
         
         # Get the model instance
+        if os.getenv("JB_MUTATOR_VLLM_URL"):
+            from src.mutator_proxy import generate
+            return await asyncio.to_thread(generate, request_dict)
         model = LLMModel()
         # Submit to the batch processor and wait for result
         start_time = time.time()
@@ -301,5 +304,9 @@ print('Server running with server-side batching!', flush=True)
 @app.on_event("startup")
 async def preload_model():
     """Load the model at process start so first request is fast."""
+    if os.getenv("JB_MUTATOR_VLLM_URL"):
+        from src.mutator_proxy import assert_ready
+        await asyncio.to_thread(assert_ready)
+        return
     model = LLMModel()
     await model.start_batch_processor()

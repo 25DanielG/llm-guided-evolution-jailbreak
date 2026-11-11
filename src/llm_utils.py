@@ -40,6 +40,14 @@ def clean_code_from_llm(code_from_llm):
         return None
 
 def get_llm_code_generator(llm_model):
+    from src.model_serving import registry, profile
+    profiles = registry()["models"]
+    registered = llm_model in profiles or any(p["model_id"] == llm_model for p in profiles.values())
+    if registered:
+        selected = os.getenv("JB_MUTATOR_PROFILE", "")
+        if not LOCAL_LLM or not selected or profile(selected) != profile(llm_model) or not os.getenv("JB_MUTATOR_VLLM_URL"):
+            raise ValueError("Registered mutators require LOCAL_LLM=true and matching JB_MUTATOR_PROFILE/JB_MUTATOR_VLLM_URL")
+        return submit_mixtral_local, llm_code_qc_hf
     # Prefer the local uvicorn-hosted model when configured
     if LOCAL_LLM:
         if llm_model in (LLM_MIXTRAL, LLM_LLAMA3, 'llama3.3'):
@@ -180,7 +188,7 @@ def llm_code_qc_hf(code_from_llm, base_code, generate_text=None):
     print(prompt2llm)
     
     code_from_llm = submit_mixtral_local(prompt2llm, max_new_tokens=1500, top_p=0.1, temperature=0.1, 
-                      model_id="mistralai/Mixtral-8x7B-v0.1", return_gen=False)
+                      return_gen=False)
     box_print("TEXT FROM LLM", print_bbox_len=60, new_line_end=False)
     print(code_from_llm)
     code_from_llm = clean_code_from_llm(code_from_llm)
@@ -518,7 +526,9 @@ def get_llm_server_hostname():
         hostname = f.readline().strip() 
     return hostname
 
-def submit_mixtral_local(prompt, max_new_tokens=850, temperature=0.2, top_p=0.15, server_url=None, return_gen=False):
+def submit_mixtral_local(prompt, max_new_tokens=None, temperature=0.2, top_p=0.15, server_url=None, return_gen=False):
+    if max_new_tokens is None:
+        max_new_tokens = int(os.getenv("JB_MUTATOR_MAX_NEW_TOKENS", "850"))
     if server_url is None:
         server_url = f"http://{os.getenv('SERVER_HOSTNAME', 'localhost')}:{PORT}/generate"
     payload = {
@@ -545,7 +555,7 @@ def submit_mixtral_local(prompt, max_new_tokens=850, temperature=0.2, top_p=0.15
             if return_gen is False:
                 return output_txt
             else:
-                return output_txt, generate_text
+                return output_txt, submit_mixtral_local
         else:
             print(f"Error: {response.status_code}")
             print(response.text)

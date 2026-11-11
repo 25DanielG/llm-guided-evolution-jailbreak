@@ -1,0 +1,6 @@
+# Separate from pyproject.toml (which pins torch 2.6.0).
+# Candidate runtime: CPU interface checks only; GPU acceptance pending.
+vllm==0.17.0
+mistral_common[image]==1.9.1
+transformers==4.57.6
+openai-harmony==0.0.8

@@ -30,6 +30,13 @@ This code has been tested on Python 3.12
 
 If you wish to use features with Google's Gemini, please follow the instructions for [Setting Up an API Key](https://ai.google.dev/gemini-api/docs/api-key)
 
+### Shared PACE ICE models
+
+See [Shared model serving](docs/shared-model-serving.md) for the team registry,
+Mistral/Llama compatibility, and configured GPT-OSS 20B, GPT-OSS 120B, and Devstral
+Small 2 24B profiles. The new models require GPU acceptance testing before use;
+no new model is currently claimed operational.
+
 ### GitHub Actions Workflows
 
 GitHub Actions workflow files in `.github/workflows/` are intentionally thin wrappers. The shell logic they run lives in `scripts/workflows/` so CI behavior can be tested and updated outside YAML:
