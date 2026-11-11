@@ -11,6 +11,7 @@ import subprocess
 import yaml
 import numpy as np
 import re
+from pathlib import Path
 import urllib.request
 import urllib.error
 from deap import base, creator, tools
@@ -19,6 +20,7 @@ from functools import partial
 from src.utils.print_utils import print_population, print_scores, box_print, print_job_info
 from src.llm_utils import split_file, retrieve_base_code
 from src.map_elites import ArchiveDecision, MapElitesArchive, descriptor_from_file
+from src import checkpointing
 from src.cfg.constants import *
 from src.cfg import constants
 import glob
@@ -1158,7 +1160,28 @@ def remove_duplicates(population):
     return unique_individuals
 
 # --- Checkpoint Functions --- #
+def checkpoint_identity():
+    keys = ('JB_TARGET_MODEL_PATH', 'JB_JUDGE_MODEL_PATH', 'JB_REPORTING_MODEL_PATH',
+            'JB_RUN_TARGET_PROFILE', 'JB_RUN_JUDGE_PROFILE', 'JB_RUN_MUTATOR_PROFILE',
+            'JB_CACHE_DIR', 'JB_JUDGE_PROMPT')
+    return {'run_id': RUN_ID, 'llm_model': globals().get('llm_model', DEFAULT_LLM_MODEL),
+            'selection': globals().get('_selection_method'), 'prompt_glob': PROMPT_GLOB,
+            'registry_sha256': checkpointing.digest(os.path.join(os.path.dirname(__file__), 'config/served_models.json')),
+            'environment': {key: os.getenv(key) for key in keys}}
+
+
 def save_checkpoint(gen, folder_name="checkpoints", global_path=None, checkpoint_data=None):
+    if os.getenv('JB_RESUME_MODE', 'auto') in ('new', 'required'):
+        if global_path is None:
+            raise ValueError('Strict checkpoints require a global directory')
+        data = dict(checkpoint_data) if checkpoint_data is not None else {
+            'population': population, 'hof': hof, 'map_elites_archive': MAP_ELITES_ARCHIVE}
+        data.update(python_random_state=random.getstate(), numpy_random_state=np.random.get_state())
+        result = checkpointing.commit(gen, folder_name, global_path, data,
+            {'GLOBAL_DATA': GLOBAL_DATA, 'GLOBAL_DATA_HIST': GLOBAL_DATA_HIST,
+             'GLOBAL_DATA_ANCESTRY': GLOBAL_DATA_ANCESTRY}, checkpoint_identity())
+        print(f'Committed matched checkpoint: {result}', flush=True)
+        return result
     os.makedirs(folder_name, exist_ok=True)
 
     if global_path is not None:
@@ -1215,6 +1238,18 @@ def extract_generation(filename, kind):
     return int(matcher.group(1)) if matcher else None
 
 def load_checkpoint(folder_name="checkpoints", checkpoint_file=None, global_path="checkpoints", global_file=None):
+    mode = os.getenv('JB_RESUME_MODE', 'auto')
+    if mode == 'new':
+        if any(Path(folder_name).glob('checkpoint_gen_*')) or any(Path(global_path).glob('global_gen_*')):
+            raise ValueError('New run already has checkpoints; choose required resume or a fresh RUN_ID')
+        return None, None, None
+    if mode == 'required':
+        state, next_gen, globals_data = checkpointing.restore(folder_name, global_path,
+                                                            checkpoint_identity(), checkpoint_file)
+        random.setstate(state['python_random_state'])
+        np.random.set_state(state['numpy_random_state'])
+        checkpointing.progress(next_gen - 1, Path(folder_name) / f'checkpoint_gen_{next_gen - 1}.pkl')
+        return state, next_gen, globals_data
     if not os.path.exists(folder_name) or not os.path.exists(global_path):
         print("Path does not exist, returning none for checkpoints")
         return None, None, None
@@ -1332,10 +1367,14 @@ if __name__ == "__main__":
     parser.add_argument('--global_path', type=str, help='Path to global variables', default=ROOT_DIR)
     parser.add_argument('--prompt_group', type=str, help='Prompt group or glob (relative to templates/)', default=None)
     parser.add_argument('--run-id', type=str, default=RUN_ID)
+    parser.add_argument('--resume-mode', choices=('auto', 'new', 'required'),
+                        default=os.getenv('JB_RESUME_MODE', 'auto'))
+    parser.add_argument('--checkpoint-file', help='Explicit trusted checkpoint_gen_N.pkl for strict recovery')
     # Parse the arguments
     args = parser.parse_args()
     RUN_ID = args.run_id
     llm_model = args.llm_model
+    os.environ['JB_RESUME_MODE'] = args.resume_mode
 
     PROMPT_GLOB = resolve_prompt_glob(args.prompt_group)
 
@@ -1347,7 +1386,8 @@ if __name__ == "__main__":
         print("Error in Island Generation: No LLM specified. Exiting script")
         exit(1)
 
-    population_data, start_gen, global_data = load_checkpoint(folder_name=args.checkpoints, global_path=args.global_path)
+    population_data, start_gen, global_data = load_checkpoint(folder_name=args.checkpoints,
+        global_path=args.global_path, checkpoint_file=args.checkpoint_file)
     if population_data:
         box_print("CHECKPOINT LOADED")
         GLOBAL_DATA = global_data["GLOBAL_DATA"]
@@ -1365,15 +1405,20 @@ if __name__ == "__main__":
         delayed_creation_check(population)
         hof = tools.ParetoFront()
 
-    # Evaluate the entire population
-    for ind in population:
-        ind.fitness.values = PLACEHOLDER_FITNESS
-
     os.environ["JB_NUM_GENS"] = str(num_generations)
     os.environ.setdefault("JB_GEN", str(start_gen))
-    check_and_update_fitness(population)
-    update_map_elites_archive(population)
+    # Strict resume retains completed fitness/archive and does not re-evaluate parents.
+    if not population_data or args.resume_mode == 'auto':
+        for ind in population:
+            ind.fitness.values = PLACEHOLDER_FITNESS
+        check_and_update_fitness(population)
+        update_map_elites_archive(population)
+        if args.resume_mode == 'new':
+            save_checkpoint(0, folder_name=args.checkpoints, global_path=args.global_path)
     write_map_elites_summary(MAP_ELITES_ARCHIVE, max(0, start_gen - 1))
+    if os.getenv('JB_STOP_FILE') and os.path.exists(os.environ['JB_STOP_FILE']):
+        print('Stop requested before next generation; retained committed checkpoint', flush=True)
+        raise SystemExit(75)
     # Evolution
     for gen in range(start_gen, num_generations if migration_gen == 0 else ((start_gen + migration_gen - 1) // migration_gen) * migration_gen + 1):
         CURRENT_GENERATION = gen
@@ -1392,6 +1437,8 @@ if __name__ == "__main__":
         '''
 
         box_print("CURRENT POPULATION SIZE:", len(population))
+        if args.resume_mode != 'auto' and len(population) < num_elites:
+            raise RuntimeError('Insufficient valid population; strict run refuses to reseed. Inspect the last checkpoint.')
         while len(population) < num_elites:
             print("MINIMUM NUMBER OF IND NOT ACHIEVED, TRYING AGAIN")
             GEN_COUNT = -1
@@ -1498,6 +1545,9 @@ if __name__ == "__main__":
         print_scores(population, FITNESS_WEIGHTS)
         hof.update(population)
         save_checkpoint(gen, folder_name=args.checkpoints, global_path=args.global_path)
+        if os.getenv('JB_STOP_FILE') and os.path.exists(os.environ['JB_STOP_FILE']):
+            print('Checkpoint committed; stopping at requested generation boundary', flush=True)
+            raise SystemExit(75)
         LINKED_GENES = {}
         # mutate x prompts
         # mutate_prompts()

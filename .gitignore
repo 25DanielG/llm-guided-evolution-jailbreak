@@ -70,3 +70,4 @@ notebook.md
 jailbreak_card_*.md
 
 .ci-venv/
+/run_records/

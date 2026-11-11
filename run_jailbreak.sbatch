@@ -292,7 +292,10 @@ esac
 echo "Starting evolution."
 
 # run's checkpoint/global dirs
+CHECKPOINT_ARGS=()
+[[ -z "${JB_CHECKPOINT_FILE:-}" ]] || CHECKPOINT_ARGS=(--checkpoint-file "$JB_CHECKPOINT_FILE")
 uv run python run_improved.py --checkpoints "${RUN_ID}/ckpt" --global_path "${RUN_ID}/global" \
-    --llm_model "${MUTATOR_PROFILE:-llama3}" --prompt_group Jailbreak/traits --run-id "$RUN_ID"
+    --llm_model "${MUTATOR_PROFILE:-llama3}" --prompt_group Jailbreak/traits --run-id "$RUN_ID" \
+    --resume-mode "${JB_RESUME_MODE:-auto}" "${CHECKPOINT_ARGS[@]}"
 
 echo "=== run complete ==="

@@ -1,5 +1,11 @@
 # Shared models on PACE ICE
 
+For the latest prerequisite observations, blocked installation attempt, bounded
+GPU acceptance scripts and strict overnight recovery, see the
+[deployment validation report](deployment-validation-2026-11-11.md) and
+[operations runbook](overnight-operations.md). These extend this configuration;
+they do not claim that the new models have performed inference.
+
 This extends **25DanielG/llm-guided-evolution-jailbreak**, branch
 `MosesTheRedSea-main` (synchronized through merged CI repair
 `7f9ded9244aa8cbc8a57e7e1b1e671538f267278`).
