@@ -52,12 +52,12 @@ TARGET_TP=1
 MUTATOR_TP=1
 if [[ -n "$TARGET_PROFILE" ]]; then
     TARGET_MODEL=$(python3 -m src.model_serving path --model "$TARGET_PROFILE")
-    TARGET_TP=$(python3 -m src.model_serving tp --model "$TARGET_PROFILE")
+    TARGET_TP="${JB_RUN_TARGET_TP:-$(python3 -m src.model_serving tp --model "$TARGET_PROFILE")}"
     export JB_TARGET_PROFILE="$TARGET_PROFILE"
 fi
 if [[ -n "$JUDGE_PROFILE" ]]; then
     JUDGE_MODEL=$(python3 -m src.model_serving path --model "$JUDGE_PROFILE")
-    JUDGE_TP=$(python3 -m src.model_serving tp --model "$JUDGE_PROFILE")
+    JUDGE_TP="${JB_RUN_JUDGE_TP:-$(python3 -m src.model_serving tp --model "$JUDGE_PROFILE")}"
     export JB_JUDGE_PROFILE="$JUDGE_PROFILE"
     if [[ "$JUDGE_PROMPT" == guide && "$JUDGE_PROFILE" != llama-3.3-70b ]]; then
         echo "ERROR: guide judge is validated only with llama-3.3-70b; use rubric for new models" >&2
@@ -66,7 +66,7 @@ if [[ -n "$JUDGE_PROFILE" ]]; then
 fi
 if [[ -n "$MUTATOR_PROFILE" ]]; then
     MUTATOR_MODEL=$(python3 -m src.model_serving path --model "$MUTATOR_PROFILE")
-    MUTATOR_TP=$(python3 -m src.model_serving tp --model "$MUTATOR_PROFILE")
+    MUTATOR_TP="${JB_RUN_MUTATOR_TP:-$(python3 -m src.model_serving tp --model "$MUTATOR_PROFILE")}"
     export JB_MUTATOR_PROFILE="$MUTATOR_PROFILE"
 fi
 
@@ -119,6 +119,10 @@ HOST=$(hostname)
 
 if ! [[ "$JUDGE_TP" =~ ^[1-9][0-9]*$ ]]; then
     echo "ERROR: JB_RUN_JUDGE_TP must be a positive integer, got: $JUDGE_TP" >&2
+    exit 1
+fi
+if ! [[ "$TARGET_TP" =~ ^[1-9][0-9]*$ && "$MUTATOR_TP" =~ ^[1-9][0-9]*$ ]]; then
+    echo "ERROR: profile target and mutator TP must be positive integers" >&2
     exit 1
 fi
 case "$JUDGE_PROMPT" in
@@ -192,7 +196,7 @@ TARGET_COMMAND=("${JB_VLLM_BIN:-vllm}" serve "$TARGET_MODEL" --served-model-name
     --host 0.0.0.0 --port 8001 --gpu-memory-utilization 0.9)
 if [[ -n "$TARGET_PROFILE" ]]; then
     TARGET_COMMAND=(python3 -m src.model_serving serve --model "$TARGET_PROFILE"
-        --served-name target --port 8001 --max-len "${JB_TARGET_MAX_MODEL_LEN:-4096}")
+        --served-name target --port 8001 --max-len "${JB_TARGET_MAX_MODEL_LEN:-4096}" --tp "$TARGET_TP")
 fi
 JUDGE_COMMAND=("${JB_VLLM_BIN:-vllm}" serve "$JUDGE_MODEL" --served-model-name judge
     --host 0.0.0.0 --port 8002 --gpu-memory-utilization 0.9)
@@ -201,7 +205,7 @@ read -ra JUDGE_LEGACY_ARGS <<< "$JUDGE_EXTRA_ARGS"
 JUDGE_COMMAND+=("${JUDGE_LEGACY_ARGS[@]}")
 if [[ -n "$JUDGE_PROFILE" ]]; then
     JUDGE_COMMAND=(python3 -m src.model_serving serve --model "$JUDGE_PROFILE"
-        --served-name judge --port 8002 --max-len "${JUDGE_MAX_LEN:-4096}")
+        --served-name judge --port 8002 --max-len "${JUDGE_MAX_LEN:-4096}" --tp "$JUDGE_TP")
 fi
 
 # target vLLM (weaker model)
@@ -230,7 +234,7 @@ echo "$HOST" > hostname.log
 if [[ -n "$MUTATOR_PROFILE" ]]; then
     MUT_VLLM_PID=$(start_with_retry "mutator vLLM" mutator_vllm.log \
         env CUDA_VISIBLE_DEVICES="$MUTATOR_DEV" python3 -m src.model_serving serve \
-        --model "$MUTATOR_PROFILE" --port 8004 --max-len "${JB_MUTATOR_MAX_MODEL_LEN:-4096}") || exit 1
+        --model "$MUTATOR_PROFILE" --port 8004 --max-len "${JB_MUTATOR_MAX_MODEL_LEN:-4096}" --tp "$MUTATOR_TP") || exit 1
     export JB_MUTATOR_VLLM_URL="http://$HOST:8004/v1"
     # Proxy startup validates model identity, so wait for its backend first.
     deadline=$((SECONDS + ${JB_SERVER_READY_TIMEOUT:-1200}))

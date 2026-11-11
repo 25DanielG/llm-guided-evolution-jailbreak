@@ -1,7 +1,8 @@
 # Shared models on PACE ICE
 
 This extends **25DanielG/llm-guided-evolution-jailbreak**, branch
-`MosesTheRedSea-main` (verified base `c8f4b290b7bb021bc0e2f4f6f8d0977a05e3326f`).
+`MosesTheRedSea-main` (synchronized through merged CI repair
+`7f9ded9244aa8cbc8a57e7e1b1e671538f267278`).
 The repository default branch is `new_main`; submit these changes to the Moses
 branch. No CONTRIBUTING.md, AGENTS.md, or PR template was found on that branch.
 Use a feature branch and PR; do not change a running team's checkout.
@@ -44,14 +45,15 @@ change. `existing` records pre-existing support, not a new deployment verificati
 | --- | --- | --- | --- | --- |
 | `mistral-7b` | `mistralai/Mistral-7B-Instruct-v0.2` / Mistral AI | BF16 | ~14 GB weights plus runtime/KV; plan >=24 GB | existing |
 | `llama-3.3-70b` | `meta-llama/Llama-3.3-70B-Instruct` / Meta | BF16 | ~140 GB weights plus runtime/KV; existing profile TP=2 on 80 GB or larger GPUs | existing |
-| `gpt-oss-20b` | `openai/gpt-oss-20b` / OpenAI | Native MXFP4 MoE weights, other tensors in checkpoint precision | Official model minimum 16 GB; conservative shared launch: 1 H200 | configured |
-| `gpt-oss-120b` | `openai/gpt-oss-120b` / OpenAI | Native MXFP4 MoE weights, other tensors in checkpoint precision | Official single-GPU guidance: 80 GB; conservative shared launch: 1 H200 | configured |
-| `devstral-small-2-24b` | `mistralai/Devstral-Small-2-24B-Instruct-2512` / Mistral AI | Native FP8 checkpoint | ~24 GB weights plus runtime/KV/vision overhead; plan >=48 GB; conservative shared launch: 1 H200 | configured |
+| `gpt-oss-20b` | `openai/gpt-oss-20b` / OpenAI | Native MXFP4 MoE weights, other tensors in checkpoint precision | Official model minimum 16 GB; shared smoke plan: 1 H100 (80 GB) or H200 (141 GB) | configured |
+| `gpt-oss-120b` | `openai/gpt-oss-120b` / OpenAI | Native MXFP4 MoE weights, other tensors in checkpoint precision | Official single-GPU guidance: 80 GB; prefer 1 H200 for headroom or test TP=2 on 2 H100s | configured |
+| `devstral-small-2-24b` | `mistralai/Devstral-Small-2-24B-Instruct-2512` / Mistral AI | Native FP8 checkpoint | ~24 GB weights plus runtime/KV/vision overhead; plan >=48 GB; shared smoke plan: 1 H100 or H200 | configured |
 
 Weight estimates are capacity planning, **not measured peak VRAM**. New profiles
 use TP=1, context 4096, max 8 sequences, GPU utilization 0.9. GPU memory is distinct
-from host RAM: `serve_model.sbatch` requests 96 GB host RAM, one H200, 8 CPUs, and
-one hour. These conservative choices need acceptance testing; full 128k/256k
+from host RAM: `serve_model.sbatch` requests 96 GB host RAM, one H100 **or** H200,
+8 CPUs, and one hour. Override the feature with Slurm `--constraint` at submission;
+environment variables inside `#SBATCH` lines are not expanded. These choices need acceptance testing; full 128k/256k
 contexts need substantially more KV memory. The combined run still requests 192 GB
 host RAM by default; adjust after measurement. It needs target TP + judge TP +
 reporter 1 + mutator TP GPUs. Default four; using the 70B profile adds one GPU for
@@ -64,6 +66,9 @@ each role that uses it.
   vLLM handles Harmony and separates reasoning from final content. The shared parser
   retains reasoning separately and passes only final `message.content` to fitness
   and code extraction. Reasoning-only truncation and unparsed Harmony fail explicitly.
+  vLLM 0.17 returns `message.reasoning`; older `reasoning_content` is also accepted.
+  Empty/whitespace final answers, malformed messages and tool calls (even with text)
+  fail rather than enter fitness scoring. The parser does not execute tools.
   `max_tokens` includes reasoning: try a 2048-token budget initially, leaving room for
   the input inside the 4096 context. The mutator accepts
   `JB_MUTATOR_REASONING_EFFORT=low|medium|high` (default medium). Set
@@ -124,6 +129,11 @@ export JB_VLLM_BIN="$TEAM_SERVING_ENV/bin/vllm"
 The requirements file pins the inference runtime, tokenizer, Transformers, and
 Harmony versions. Transitive resolution has **not** been verified in this session;
 retain the resolved freeze with the GPU acceptance record for identical replay.
+The pinned vLLM 0.17.0 source declares torch 2.10.0, Transformers >=4.56,<5,
+Mistral Common >=1.9.1 and Harmony >=0.0.3; the direct pins satisfy these ranges.
+Its native Mistral config parser reads `params.json`, which avoids the HF
+Ministral 3 / Transformers 5 path. This is source compatibility review, not a
+successful installation or model-loading test.
 Select an installed CUDA module and driver compatible with that wheel, record the
 exact module name as `JB_CUDA_MODULE`, and verify `nvidia-smi`, vLLM version, driver,
 CUDA, and Python on an allocated node. Do not assume unversioned `cuda` is compatible.
@@ -147,7 +157,8 @@ download manifest/checksums and environment freeze with the deployment record.
 The launcher rejects missing/mismatched manifests or absent safetensors and uses
 HF offline mode. It does not verify every weight hash; staging verification belongs
 to the maintainer. Include config, tokenizer/template and native `params.json`/
-`tekken.json`/consolidated weights for Devstral. Do not create a manifest for an
+`tekken.json`/`consolidated*.safetensors` for Devstral; the preflight specifically
+checks these native files rather than accepting only HF-format shards. Do not create a manifest for an
 incomplete download.
 
 ## Start, access, and select
@@ -157,7 +168,8 @@ First inspect without starting a server or downloading anything:
 ```bash
 python3 -m src.model_serving list
 python3 -m src.model_serving command --model gpt-oss-20b
-python3 -m unittest discover -s tests -p test_shared_model_serving.py -v
+# Prepare .ci-venv using tests/Testing.md before running these Python 3.12 tests.
+.ci-venv/bin/python -m pytest tests/test_shared_model_serving.py --strict-markers -v
 bash -n run_jailbreak.sbatch serve_model.sbatch
 ```
 
@@ -166,13 +178,18 @@ After approval, verified PACE allocation access, staged weights and environment:
 ```bash
 export JB_SERVE_MODEL=gpt-oss-20b    # or gpt-oss-120b / devstral-small-2-24b
 # JB_VLLM_BIN and JB_CUDA_MODULE must already name the approved shared environment/module.
-sbatch --export=ALL serve_model.sbatch
+export JB_GPU_CONSTRAINT='H100|H200' # use H100 or H200 to select just one family
+# Also supply partition/account/QoS verified for your team if PACE requires them.
+sbatch --constraint="$JB_GPU_CONSTRAINT" --export=ALL serve_model.sbatch
 ```
 
 `serve_model.sbatch` is serving-only: no island controller or evolution is
 submitted. It prints the node URL; `/v1/models` serves the exact HF model ID.
 `src.model_serving serve` requires a Slurm allocation and enough visible GPUs.
 For the existing 70B profile, request `-G 2`; TP defaults to 2 in the registry.
+For GPT-OSS 120B on two H100s, set `JB_SERVE_TP=2` and submit with `-G 2 -C H100`.
+`JB_SERVE_TP` changes vLLM sharding; the Slurm GPU count must match. The one-GPU
+registry default remains available for H200 or separately measured 80 GB tests.
 Do not submit until the current partition/account/QoS rules are verified.
 
 To use a separately served model as target, export its allocation URL and ID:
@@ -194,15 +211,21 @@ this performs the existing smoke checks without evolution:
 export JB_RUN_TARGET_PROFILE=gpt-oss-20b
 export JB_TARGET_MAX_NEW_TOKENS=2048
 export JB_SMOKE_ONLY=1
-sbatch -N 1 -G 4 -C H200 --export=ALL run_jailbreak.sbatch
+sbatch -N 1 -G 4 --constraint="$JB_GPU_CONSTRAINT" --export=ALL run_jailbreak.sbatch
 ```
 
 To select a new mutator instead, set `JB_RUN_MUTATOR_PROFILE` to any new registry
 key; the script starts its backend at 8004, exports `JB_MUTATOR_PROFILE` and
 `JB_MUTATOR_VLLM_URL`, and passes that key as `--llm_model` to `run_improved.py`.
 Set `JB_RUN_JUDGE_PROFILE` for a rubric judge. Select one role per acceptance test
-first; existing target/judge/reporter identity checks still apply. Increase
-`JB_*_MAX_MODEL_LEN`/generation budgets only after memory validation. Mutator
+first; existing target/judge/reporter identity checks still apply.
+
+For profile roles, `JB_RUN_TARGET_TP`, `JB_RUN_JUDGE_TP`, and `JB_RUN_MUTATOR_TP`
+override registry TP and are passed to both GPU grouping and vLLM. Request
+`target TP + judge TP + 1 reporter + mutator TP` GPUs on one node. For example,
+GPT-OSS 120B target TP=2 with the other default roles needs `-G 5`, not `-G 4`.
+
+Increase `JB_*_MAX_MODEL_LEN`/generation budgets only after memory validation. Mutator
 prompts default to the pipeline's original text; Devstral's optional
 `CHAT_SYSTEM_PROMPT.txt` is appropriate for standalone chat, while
 `VIBE_SYSTEM_PROMPT.txt` assumes a tool scaffold absent from this pipeline.
@@ -221,25 +244,34 @@ Official PACE sources were consulted/attempted **before implementation**:
 - [Legacy official ICE orientation](https://docs.pace.gatech.edu/ice_cluster/img/ICE_orientation_spring2023.pdf)
 - [Georgia Tech 2025 resource overview](https://support.cc.gatech.edu/sites/default/files/2025-grad-orientation.pdf)
 
-The old `docs.pace.gatech.edu` host did not resolve here; the current ServiceNow
-pages could not be retrieved by the documentation tool. Indexed legacy orientation
-material confirms modules, requested job resources, shared storage and home quotas,
-but its old queue names/limits are not current Slurm authority. The GT 2025 resource
-overview lists ICE H100/H200/A100, but does not prove this project's entitlement
-or availability. On this session's `login-ice-gnr-2`, read-only `sinfo` and
-`sacctmgr show assoc` failed to contact the scheduler. Thus **current partitions,
-QoS/account allocation, GPU availability, CUDA/driver compatibility, storage quota,
-and model-serving/network usage restrictions remain unverified**. No dedicated
-PACE model-serving policy was successfully retrieved. Serving on compute nodes
-inside Slurm follows the repository's existing architecture; confirm current PACE
-policy before deployment. The H200 resource directives are inherited from
-`server.sh`, not a claim of a verified allocation. Do not copy Phoenix partitions
-or historic ICE queue names into the configuration.
+Follow-up inspection on **2026-11-11 UTC** verified local ICE scheduler
+configuration and installed module listings on `login-ice-gnr-2`:
+
+- `/etc/slurm/slurm.conf` identifies `ice-slurm`, H100/H200 features and typed
+  GRES `gpu:h100:8` / `gpu:h200:8`. Its static `ice-gpu` partition includes nodes
+  from both families. These are configured resources, not live idle capacity or
+  proof of this team's partition/account/QoS entitlement.
+- `module -t avail cuda` lists `cuda/12.9.1` and `cuda/13.0.1` among other versions.
+  The vLLM 0.17 default binary is built for CUDA 12.9. An available module is not
+  proof of the allocated node's driver compatibility; confirm that before use.
+- Bounded, read-only `sinfo -N -h -o '%N|%P|%G|%f|%t'` and
+  `sacctmgr -n -P show assoc user=YOUR_USERNAME format=Cluster,Account,Partition,QOS`
+  still cannot reach the controller/database from this session. Do not infer
+  current availability or permissions from the static file.
+- The shared root and existing Llama config are readable; all three new registry
+  checkpoint paths remain absent. Quota and maintainer write access are unverified.
+
+Current PACE ServiceNow Slurm/storage pages and the ICE landing page remain
+inaccessible to the documentation tool. Current service/network usage policy
+has not been verified. Read those pages through an authenticated GT session
+before deployment. The new serving-only script accepts either H100 or H200;
+legacy `server.sh` directives and production loading/readiness timeouts are
+unchanged. Do not copy Phoenix or historic ICE partitions into this launch.
 
 Acceptance requires an authorized maintainer to:
 
 1. Read the current ICE Slurm, storage, software/modules and service/network usage
-   rules through an authenticated GT session; verify entitlement and current H200
+   rules through an authenticated GT session; verify entitlement and current H100/H200
    feature/partition/QoS with PACE before submitting anything.
 2. Verify shared quota/permissions, stage immutable model revisions, resolve the
    serving environment, record its freeze and compatible CUDA module/driver.
@@ -257,6 +289,24 @@ Acceptance requires an authorized maintainer to:
 
 No weights, GPU jobs, or evolutionary experiments were run for this integration.
 
+## Synchronization and CPU validation
+
+PR #3 was synchronized with Moses commit `7f9ded9244aa8cbc8a57e7e1b1e671538f267278`
+by feature-branch merge `8d52cd94a81038ae507fe429c945cd33250ba30f`, with no conflicts.
+PR #4's CI workflow, Python 3.12 CPU dependencies, guards, explicit integration
+markers and production timeout preservation are retained unchanged.
+
+After synchronization, [GitHub Python CI passed](https://github.com/25DanielG/llm-guided-evolution-jailbreak/actions/runs/42940600655)
+and the documentation workflow passed. The subsequent deployment preparation adds
+tests for GPU/TP selection, native staging checks, team storage overrides and
+both reasoning fields; **17 serving unit tests pass locally**. Final full-suite
+and hosted results are recorded in PR #3 after this follow-up is published.
+
+CPU tests use mocks and do not establish inference, GPU memory fit or operational
+status. The code is prepared for approval-gated smoke testing; staged checkpoints,
+a resolved shared serving environment, verified driver and PACE entitlement/policy
+are still required before any job can be submitted.
+
 ## Official inference references
 
 - [OpenAI vLLM guide](https://developers.openai.com/cookbook/articles/gpt-oss/run-vllm)
@@ -271,30 +321,5 @@ No weights, GPU jobs, or evolutionary experiments were run for this integration.
   (Devstral Small 2 shares this architecture per its model card)
 - [vLLM 0.17.0 common requirements](https://github.com/vllm-project/vllm/blob/v0.17.0/requirements/common.txt),
   [CUDA requirements](https://github.com/vllm-project/vllm/blob/v0.17.0/requirements/cuda.txt)
-
-## CPU validation record (2026-11-10)
-
-- 12 new tests passed on system Python 3.9 and the available Python 3.12 test
-  environment: discovery, legacy routing, checkpoint provenance, login-node guard,
-  actual setup-prefix GPU grouping with fake allocation IDs, chat parsing, API
-  proxy and identity checks. HTTP and model loading are mocked.
-- The selected new/existing CPU suite returned **57 passed, 2 failed**. Both failing
-  `test_smoke_refusal_check_per_mode` cases reproduce unchanged at the base commit:
-  tests expect a harmful-response score to fail smoke, while `smoke_test.py` now
-  treats that score as informational. This integration does not change that policy.
-- `bash -n`, Python compilation, and `git diff --check` passed.
-- The initial normal pytest invocation timed out importing the heavy conftest;
-  the result-path test cannot run on bare system Python without deap. Neither is
-  counted as passing. The CPU regression run bypassed conftest and plugin discovery:
-
-```bash
-LLMGE_AUTO_START_SERVER=0 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
-  python -m pytest --noconftest -q tests/test_shared_model_serving.py \
-  tests/test_jailbreak_run_controls.py tests/sota/test_jailbreak_phase1.py \
-  tests/sota/test_judge_guide_mode.py
-```
-
-Use a Python 3.12 environment with pytest and requests for this command. Avoid an
-unqualified pytest run: `tests/conftest.py` normally auto-submits a GPU server.
-The PR workflows were inspected: the Slurm workflow triggers only on `main` pushes
-or manual dispatch, not this feature branch/PR; PR Python CI sets autostart to 0.
+- [vLLM 0.17 chat response protocol (`reasoning`)](https://github.com/vllm-project/vllm/blob/v0.17.0/vllm/entrypoints/openai/chat_completion/protocol.py),
+  [native Mistral config parser](https://github.com/vllm-project/vllm/blob/v0.17.0/vllm/transformers_utils/config.py)

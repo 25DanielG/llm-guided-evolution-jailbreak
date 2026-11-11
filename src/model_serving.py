@@ -47,9 +47,14 @@ def command(name, path=None, served_name=None, port=8001, host="0.0.0.0", tp=Non
 def validate_checkpoint(name, path):
     item = profile(name)
     path = Path(path)
-    if not path.is_dir() or not (path / "config.json").is_file():
+    native_mistral = "mistral" in item["vllm_args"]
+    config_name = "params.json" if native_mistral else "config.json"
+    if not path.is_dir() or not (path / config_name).is_file():
         raise ValueError(f"Checkpoint not staged at {path}; ask the shared storage maintainer")
-    if not any(path.glob("*.safetensors")):
+    if native_mistral and not (path / "tekken.json").is_file():
+        raise ValueError(f"Native Mistral tokenizer tekken.json missing at {path}")
+    weight_pattern = "consolidated*.safetensors" if native_mistral else "*.safetensors"
+    if not any(path.glob(weight_pattern)):
         raise ValueError(f"No safetensors weights at {path}")
     if "revision" in item:
         manifest = path / "deployment.json"

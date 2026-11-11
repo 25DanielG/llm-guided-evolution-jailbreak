@@ -1,4 +1,4 @@
-"""CPU checks only: unittest avoids the GPU autostart in tests/conftest.py."""
+"""Deterministic CPU contracts with fake inference; no deployment verification."""
 import ast
 import asyncio
 import importlib.util
@@ -12,14 +12,17 @@ import types
 import unittest
 from unittest.mock import Mock, patch
 
+import pytest
+
 from src import model_serving, mutator_proxy
 from src.chat_response import parse_chat_response
 
 ROOT = Path(__file__).resolve().parents[1]
+pytestmark = pytest.mark.mock_inference
 
 
 def response(content="answer", reasoning=None, finish="stop"):
-    return {"choices": [{"message": {"content": content, "reasoning_content": reasoning},
+    return {"choices": [{"message": {"content": content, "reasoning": reasoning},
                          "finish_reason": finish, "logprobs": {"content": []}}],
             "usage": {"prompt_tokens": 10, "completion_tokens": 3}}
 
@@ -35,6 +38,51 @@ def load_functions(filename, names, namespace):
 
 
 class SharedModelTests(unittest.TestCase):
+    def test_submission_allows_h100_h200_and_forwards_tp(self):
+        script = ROOT / "serve_model.sbatch"
+        self.assertIn("#SBATCH -C H100|H200", script.read_text())
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            fake_python = tmp / "python3"
+            fake_python.write_text(f'#!{sys.executable}\nimport json, sys\nprint(json.dumps(sys.argv[1:]))\n')
+            fake_python.chmod(0o755)
+            env = {k: v for k, v in os.environ.items() if not k.startswith("JB_")}
+            env.update(PATH=f'{tmp}:{env["PATH"]}', SLURM_SUBMIT_DIR=str(ROOT),
+                       JB_SERVE_MODEL="gpt-oss-120b", JB_VLLM_BIN="/fake/bin/vllm",
+                       JB_CUDA_MODULE="fake-cuda", JB_SERVE_TP="2")
+            run = subprocess.run(["bash", "-c", 'module() { return 0; }; source "$1"', "test", str(script)],
+                                 env=env, capture_output=True, text=True, timeout=10)
+            self.assertEqual(run.returncode, 0, run.stderr)
+            args = json.loads(run.stdout.splitlines()[-1])
+            self.assertEqual(args[args.index("--tp") + 1], "2")
+            self.assertEqual(args[args.index("--model") + 1], "gpt-oss-120b")
+
+    def test_profile_tp_override_matches_gpu_groups_and_launch_commands(self):
+        # Run actual command construction, stopping before any server is started.
+        script = (ROOT / "run_jailbreak.sbatch").read_text().split("# target vLLM (weaker model)")[0]
+        # Staging verification alone is mocked; registry lookup and grouping are real.
+        script = ('module() { return 0; }; python3() { '
+                  'if [[ "$*" == "-m src.model_serving check "* ]]; then return 0; fi; '
+                  '"$REAL_PYTHON" "$@"; };\n') + script
+        script += '\nprintf "TARGET=%s\\n" "${TARGET_COMMAND[*]}"; printf "JUDGE=%s\\n" "${JUDGE_COMMAND[*]}"\n'
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {k: v for k, v in os.environ.items() if not k.startswith("JB_")}
+            env.update(REAL_PYTHON=sys.executable, SLURM_SUBMIT_DIR=str(ROOT), SLURM_JOB_ID="cpu-test",
+                       TMPDIR=tmp, CUDA_VISIBLE_DEVICES="a,b,c,d,e,f,g", JB_CUDA_MODULE="fake-cuda",
+                       JB_VLLM_BIN="/fake/bin/vllm", JB_RUN_TARGET_PROFILE="gpt-oss-120b",
+                       JB_RUN_JUDGE_PROFILE="gpt-oss-20b", JB_RUN_MUTATOR_PROFILE="gpt-oss-20b",
+                       JB_RUN_TARGET_TP="2", JB_RUN_JUDGE_TP="2", JB_RUN_MUTATOR_TP="2")
+            run = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, timeout=15)
+            self.assertEqual(run.returncode, 0, run.stderr)
+            self.assertIn("target=a,b judge=c,d reporting=e mutator=f,g", run.stdout)
+            for role in ("TARGET", "JUDGE"):
+                line = next(line for line in run.stdout.splitlines() if line.startswith(role + "="))
+                self.assertIn("--tp 2", line)
+            env["JB_RUN_TARGET_TP"] = "0"
+            invalid = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, timeout=15)
+            self.assertNotEqual(invalid.returncode, 0)
+            self.assertIn("positive integers", invalid.stderr)
+
     def test_combined_run_gpu_groups_without_launching_services(self):
         # Execute the actual setup prefix, ending BEFORE the first server function.
         script = (ROOT / "run_jailbreak.sbatch").read_text().split("# Retry a service's own startup")[0]
@@ -93,6 +141,30 @@ class SharedModelTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "does not match"):
                 model_serving.validate_checkpoint("gpt-oss-120b", path)
 
+    def test_native_mistral_staging_needs_native_config_tokenizer_and_weights(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)
+            item = model_serving.profile("devstral-small-2-24b")
+            (path / "deployment.json").write_text(json.dumps(item))
+            (path / "config.json").write_text("{}")
+            (path / "model-00001.safetensors").touch()
+            with self.assertRaisesRegex(ValueError, "Checkpoint not staged"):
+                model_serving.validate_checkpoint("devstral-small-2-24b", path)
+            (path / "params.json").write_text("{}")
+            with self.assertRaisesRegex(ValueError, "tekken.json"):
+                model_serving.validate_checkpoint("devstral-small-2-24b", path)
+            (path / "tekken.json").write_text("{}")
+            with self.assertRaisesRegex(ValueError, "No safetensors"):
+                model_serving.validate_checkpoint("devstral-small-2-24b", path)
+            (path / "consolidated.safetensors").touch()
+            model_serving.validate_checkpoint("devstral-small-2-24b", path)
+
+    def test_team_storage_root_override_is_used_by_commands(self):
+        with patch.dict(os.environ, {"JB_SHARED_MODEL_ROOT": "/team/models"}):
+            path = "/team/models/openai/gpt-oss-20b"
+            self.assertEqual(model_serving.model_path("gpt-oss-20b"), path)
+            self.assertEqual(model_serving.command("gpt-oss-20b")[2], path)
+
     def test_cli_never_starts_on_login_node(self):
         env = {k: v for k, v in os.environ.items() if k != "SLURM_JOB_ID"}
         run = subprocess.run([sys.executable, "-m", "src.model_serving", "serve", "--model", "gpt-oss-20b"],
@@ -111,6 +183,20 @@ class SharedModelTests(unittest.TestCase):
                      response("<|start|>assistant<|channel|>analysis"), {"choices": []}):
             with self.assertRaises(RuntimeError):
                 parse_chat_response(data)
+
+    def test_reasoning_fields_and_invalid_answers(self):
+        old = response("final")
+        old["choices"][0]["message"]["reasoning_content"] = "legacy reasoning"
+        self.assertEqual(parse_chat_response(old)["reasoning"], "legacy reasoning")
+        current = response("final", "current reasoning")
+        current["choices"][0]["message"]["reasoning_content"] = None
+        self.assertEqual(parse_chat_response(current)["reasoning"], "current reasoning")
+        tool = response("Calling a tool", finish="tool_calls")
+        tool["choices"][0]["message"]["tool_calls"] = [{"function": {"name": "test"}}]
+        for invalid in (response(""), response("  \n"), response(None, "analysis", "length"),
+                        response("final", {"bad": "shape"}), tool, {"choices": [{"message": None}]}):
+            with self.subTest(invalid=invalid), self.assertRaises(RuntimeError):
+                parse_chat_response(invalid)
 
     def test_proxy_preserves_generate_contract_and_sampling(self):
         env = {"JB_MUTATOR_PROFILE": "gpt-oss-20b", "JB_MUTATOR_VLLM_URL": "http://fake/v1",
