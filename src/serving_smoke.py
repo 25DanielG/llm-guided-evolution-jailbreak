@@ -18,9 +18,10 @@ from src.model_serving import command, model_path, profile, validate_checkpoint
 from src.run_status import atomic_json, utc
 
 
-def gpu_sample():
+def gpu_sample(device_uuids):
     result = subprocess.run(['nvidia-smi', '--query-gpu=index,uuid,name,driver_version,memory.total,memory.used',
-                             '--format=csv,noheader,nounits'], capture_output=True, text=True, timeout=10, check=True)
+                             '--format=csv,noheader,nounits', '--id', ','.join(device_uuids)],
+                            capture_output=True, text=True, timeout=10, check=True)
     rows = list(csv.reader(result.stdout.splitlines(), skipinitialspace=True))
     return {'at': utc(), 'gpu_csv': result.stdout.strip(),
             'gpus': [{'uuid':row[1], 'name':row[2], 'total_mib':int(row[4]), 'used_mib':int(row[5])}
@@ -103,14 +104,19 @@ def run(name, output, experiment_python, tp=None, port=18001, proxy_port=18137, 
             raise RuntimeError('Serving runtime differs from requirements-serving.txt; use the separate pinned environment')
         if not torch.cuda.is_available() or torch.cuda.device_count() < (tp or item['tensor_parallel_size']):
             raise RuntimeError('Serving runtime cannot see the requested CUDA GPUs')
+        # Resolve logical CUDA devices to physical UUIDs: Slurm can remap indices.
+        uuids = [str(torch.cuda.get_device_properties(i).uuid) for i in range(torch.cuda.device_count())]
+        uuids = [u if u.startswith(('GPU-', 'MIG-')) else 'GPU-' + u for u in uuids]
         record.update(model_id=item['model_id'], revision=item['revision'], checkpoint=checkpoint,
                       torch_cuda=torch.version.cuda, python=sys.version,
                       packages={n:importlib.metadata.version(n) for n in
                                 ('torch','vllm','transformers','mistral_common','openai-harmony')},
                       cuda_capabilities=[torch.cuda.get_device_capability(i) for i in range(torch.cuda.device_count())],
-                      host_memory_method='sum process-tree VmRSS KiB; shared pages may be counted twice')
-        record['nvidia_smi'] = subprocess.run(['nvidia-smi'], capture_output=True, text=True, timeout=10, check=True).stdout
-        samples.append(gpu_sample())
+                      cuda_device_uuids=uuids,
+                      host_memory_method='sum smoke process-tree VmRSS KiB; shared pages may be counted twice')
+        record['nvidia_smi'] = subprocess.run(['nvidia-smi', '--id', ','.join(uuids)],
+                                             capture_output=True, text=True, timeout=10, check=True).stdout
+        samples.append(gpu_sample(uuids))
         env = dict(os.environ, HF_HUB_OFFLINE='1', TRANSFORMERS_OFFLINE='1')
         for sig in (signal.SIGTERM, signal.SIGINT):
             old_handlers[sig] = signal.signal(sig, interrupted)
@@ -124,8 +130,8 @@ def run(name, output, experiment_python, tp=None, port=18001, proxy_port=18137, 
         def sample():
             while not stop.wait(10):
                 try:
-                    point = gpu_sample()
-                    point['host_rss_kib'] = tree_rss(backend.pid)
+                    point = gpu_sample(uuids)
+                    point['host_rss_kib'] = tree_rss(os.getpid())
                     samples.append(point)
                 except (OSError, subprocess.SubprocessError) as exc:
                     samples.append({'at': utc(), 'error': str(exc)})
@@ -136,7 +142,7 @@ def run(name, output, experiment_python, tp=None, port=18001, proxy_port=18137, 
         if item['model_id'] not in {m['id'] for m in models['data']}:
             raise RuntimeError('Served identity mismatch')
         record.update(models=models, startup_seconds=time.monotonic() - started)
-        samples.append(dict(gpu_sample(), host_rss_kib=tree_rss(backend.pid)))
+        samples.append(dict(gpu_sample(uuids), host_rss_kib=tree_rss(os.getpid())))
         payload = {'model':item['model_id'], 'messages':[{'role':'user','content':'Calculate 17 times 23. Briefly verify your final answer.'}],
                    'temperature':0, 'max_tokens':2048}
         if item.get('reasoning'):
@@ -167,7 +173,7 @@ def run(name, output, experiment_python, tp=None, port=18001, proxy_port=18137, 
         reply.raise_for_status()
         record['generate_latency_seconds'] = time.monotonic() - started
         record['generate_response'] = reply.json()
-        samples.append(dict(gpu_sample(), host_rss_kib=tree_rss(backend.pid)))
+        samples.append(dict(gpu_sample(uuids), host_rss_kib=tree_rss(os.getpid())))
         if not isinstance(reply.json().get('generated_text'), str) or not reply.json()['generated_text'].strip():
             raise RuntimeError('Existing /generate contract returned no final text')
         if not re.search(r'\bREADY\b', reply.json()['generated_text'], re.I):

@@ -85,16 +85,19 @@ It fails on incompatible/corrupt checkpoints or insufficient population instead
 of restarting from seed. Existing legacy `auto` callers retain their behavior;
 that mode is forbidden in the new overnight launcher.
 
-The final targeted Python 3.12 CPU suite passed **52 tests in 11.38 seconds**:
+The final targeted Python 3.12 CPU suite passed **53 tests in 10.67 seconds**:
 real DEAP checkpoint save/load and two-step continuation, missing/corrupt/
 mismatched checkpoints, interrupted writes, explicit rollback quarantine,
 supervisor success/failure/deadline and cooperative warning handling, overlap
-protection, complete/incomplete staging promotion, mock smoke evidence/cleanup,
+protection, complete/incomplete staging promotion, allocated-UUID resource
+sampling, mock smoke evidence/cleanup,
 read-only exports, existing serving contracts and run controls/archive checks.
 The complete local ordinary suite passed **192 tests, 22 integration cases
-deselected, in 251.35 seconds** before four final guard cases were added; the
-targeted suite covers those final changes. Final hosted results for the published
-commit are recorded in PR #3.
+deselected, in 251.35 seconds** before five final guard cases were added; the
+targeted suite covers those final changes. The first published implementation
+[passed hosted CI](https://github.com/25DanielG/llm-guided-evolution-jailbreak/actions/runs/42946993629):
+196 passed, 22 deselected, 101.98 seconds, before the allocated-UUID sampling
+follow-up. Final hosted results for that follow-up are recorded in PR #3.
 This is deterministic recovery verification, not an end-to-end live-inference
 evolution or GPU resume claim.
 

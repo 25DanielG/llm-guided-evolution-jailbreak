@@ -243,9 +243,10 @@ def test_mock_smoke_orchestration_evidence_and_cleanup(tmp_path,monkeypatch,mode
     monkeypatch.setattr(torch.cuda,'is_available',lambda:True)
     monkeypatch.setattr(torch.cuda,'device_count',lambda:1)
     monkeypatch.setattr(torch.cuda,'get_device_capability',lambda n:(9,0))
+    monkeypatch.setattr(torch.cuda,'get_device_properties',lambda n:SimpleNamespace(uuid='GPU-fixture'))
     monkeypatch.setattr(serving_smoke.importlib.metadata,'version',lambda n:'0.17.0' if n=='vllm' else 'fixture')
     monkeypatch.setattr(serving_smoke,'model_path',lambda n:str(checkpoint))
-    monkeypatch.setattr(serving_smoke,'gpu_sample',lambda:{'at':run_status.utc(),
+    monkeypatch.setattr(serving_smoke,'gpu_sample',lambda uuids:{'at':run_status.utc(),
         'gpus':[{'uuid':'fixture-gpu','used_mib':100,'total_mib':80000}]})
     monkeypatch.setattr(serving_smoke.subprocess,'run',Mock(return_value=SimpleNamespace(stdout='fixture nvidia-smi')))
     created = []
@@ -274,6 +275,14 @@ def test_mock_smoke_orchestration_evidence_and_cleanup(tmp_path,monkeypatch,mode
         assert created[1].env['JB_MUTATOR_PROFILE']==model
         assert result['peak_observed_gpu_used_mib']['fixture-gpu']==100
     # All values above are fixtures; no real inference or CUDA verification occurred.
+
+
+def test_gpu_sampling_uses_allocated_uuids_not_node_wide_indices(monkeypatch):
+    query=Mock(return_value=SimpleNamespace(stdout='0, GPU-a, H100, 575.0, 80000, 100\n'))
+    monkeypatch.setattr(serving_smoke.subprocess,'run',query)
+    sample=serving_smoke.gpu_sample(['GPU-a'])
+    assert query.call_args.args[0][-2:]==['--id','GPU-a']
+    assert sample['gpus'][0]['used_mib']==100
 
 
 def test_observer_has_explicit_bounds(tmp_path,monkeypatch):

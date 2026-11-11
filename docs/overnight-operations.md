@@ -115,8 +115,9 @@ fails acceptance rather than becoming an operational claim.
 
 Each new result directory contains `result.json`, `vllm.log` and
 `generate-proxy.log`, including model/revision, Slurm ID, package versions,
-driver/torch-CUDA details, command, startup/chat/proxy latency, GPU memory
-samples and observed aggregate process-tree host RSS. RSS can double-count
+driver/torch-CUDA details, command, startup/chat/proxy latency, allocated-GPU
+memory samples selected by physical UUID (not remapped CUDA indices), and
+observed aggregate smoke-process-tree host RSS including backend and proxy. RSS can double-count
 shared pages; sampled peaks are observed bounds, not guaranteed absolute peaks.
 Collect Slurm's accounting separately after completion:
 
