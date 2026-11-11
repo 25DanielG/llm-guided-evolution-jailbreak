@@ -7,6 +7,8 @@ import sys
 import torch
 import pytest
 
+pytestmark = pytest.mark.gpu
+
 # Add the ExquisiteNetV2 directory to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../sota/ExquisiteNetV2'))
 

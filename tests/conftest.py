@@ -11,12 +11,15 @@ from pathlib import Path
 
 # Import PORT from constants
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from cfg import constants
+import pytest
+import requests
+import httpx
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 HOSTNAME_FILE = ROOT / "hostname.log"
-PORT = constants.PORT
+PORT = int(os.getenv("LLMGE_PORT", "8137"))
 READY_TIMEOUT = int(os.getenv("LLM_SERVER_READY_TIMEOUT", "3600"))
 READY_CHECK_INTERVAL = int(os.getenv("LLM_SERVER_READY_CHECK_INTERVAL", "10"))
 
@@ -147,9 +150,9 @@ def _stop_local_server():
 
 
 def pytest_sessionstart(session):
-    if os.getenv("LLMGE_AUTO_START_SERVER", "1") == "0":
+    # Legacy server startup remains available only for explicitly requested live tests.
+    if not session.config.getoption("--run-live-inference") or os.getenv("LLMGE_AUTO_START_SERVER", "0") != "1":
         return
-    print("why")
     hostname = _hostname_from_file()
     if _server_is_ready(hostname):
         print(f"Using existing LLM test server at {_server_url(hostname)}", flush=True)
@@ -165,3 +168,100 @@ def pytest_sessionstart(session):
             "LLM test server did not become ready. "
             "Set LLMGE_AUTO_START_SERVER=0 to skip auto-starting it."
         )
+
+
+def pytest_addoption(parser):
+    for marker in ("live_inference", "gpu", "dataset"):
+        parser.addoption("--run-" + marker.replace("_", "-"), action="store_true",
+                         help="Explicitly enable tests marked " + marker)
+
+
+def pytest_collection_modifyitems(config, items):
+    selected, deselected = [], []
+    for item in items:
+        disabled = any(item.get_closest_marker(marker) and not config.getoption("--run-" + marker.replace("_", "-"))
+                       for marker in ("live_inference", "gpu", "dataset"))
+        (deselected if disabled else selected).append(item)
+    if deselected:
+        config.hook.pytest_deselected(items=deselected)
+        items[:] = selected
+
+
+@pytest.fixture(autouse=True)
+def ordinary_test_isolation(request, monkeypatch):
+    """No service calls, weights or Slurm from an ordinary test; mocks override these guards."""
+    if any(request.node.get_closest_marker(m) for m in ("live_inference", "gpu", "dataset")):
+        return
+    def forbidden(*args, **kwargs):
+        pytest.fail("Ordinary test attempted external inference/network; mock the boundary or mark live_inference")
+    monkeypatch.setattr(requests.sessions.Session, "request", forbidden)
+    monkeypatch.setattr(urllib.request, "urlopen", forbidden)
+    monkeypatch.setattr(httpx.Client, "request", forbidden)
+    monkeypatch.setattr(httpx.AsyncClient, "request", forbidden)
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.setenv("TRANSFORMERS_OFFLINE", "1")
+    monkeypatch.setenv("LLM_SERVER_READY_TIMEOUT", "0")
+    monkeypatch.setenv("LLM_SERVER_READY_CHECK_INTERVAL", "0")
+    # Pretrained loading (including cached weights) is not a unit test.
+    import transformers
+    monkeypatch.setattr(transformers.AutoModelForCausalLM, "from_pretrained", forbidden)
+    monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", forbidden)
+    popen = subprocess.Popen
+    def guarded_popen(args, *positional, **kwargs):
+        executable = args[0] if isinstance(args, (list, tuple)) else str(args).split()[0]
+        if Path(str(executable)).name in {"sbatch", "salloc", "srun", "vllm", "hf", "huggingface-cli"}:
+            pytest.fail("Ordinary test attempted a scheduler/model launch")
+        return popen(args, *positional, **kwargs)
+    monkeypatch.setattr(subprocess, "Popen", guarded_popen)
+
+
+@pytest.fixture(scope="session")
+def live_llm():
+    """Real inference preflight, never a mock and never an implicit allocation."""
+    hostname = _hostname_from_file()
+    if not hostname:
+        pytest.fail("Live inference requires hostname.log from an authorized running service")
+    url = f"http://{hostname}:{PORT}"
+    try:
+        ready = requests.get(url + "/", timeout=5)
+        ready.raise_for_status()
+        response = requests.post(url + "/generate", json={"prompt": "Reply with one short greeting.",
+                                 "max_new_tokens": 128, "temperature": 0.1, "top_p": 0.9}, timeout=30)
+        response.raise_for_status()
+        assert response.json().get("generated_text", "").strip(), "No generated text"
+    except (requests.RequestException, ValueError, AssertionError) as err:
+        pytest.fail(f"Explicit live inference check failed at {url}: {err}")
+    return url
+
+
+@pytest.fixture
+def titanic_eval(tmp_path):
+    """Run the real CPU evaluator/data in a fresh sandbox; no production path changes."""
+    sandbox = tmp_path / "Titanic"
+    (sandbox / "data").mkdir(parents=True)
+    shutil.copy2(ROOT / "sota/Titanic/eval.py", sandbox / "eval.py")
+    shutil.copy2(ROOT / "sota/Titanic/data/processed_train.csv", sandbox / "data/processed_train.csv")
+    def evaluate(model_name, variant_dir):
+        return subprocess.run([sys.executable, str(sandbox / "eval.py"), "--model", model_name,
+                               "--variant_dir", str(variant_dir)], cwd=sandbox,
+                              capture_output=True, text=True, timeout=180)
+    return sandbox, evaluate
+
+
+@pytest.fixture
+def mock_codegen(monkeypatch):
+    """Mock only inference; keep real selection, extraction, validation and assembly."""
+    from unittest.mock import Mock
+    import llm_utils
+    def configure(code):
+        generator = Mock(return_value=f"```python\n{code}\n```" if code is not None else None)
+        monkeypatch.setattr(llm_utils, "get_llm_code_generator", lambda model: (generator, None))
+        return generator
+    return configure
+
+
+@pytest.fixture
+def operators():
+    import llm_mutation
+    import src.llm_crossover as crossover
+    return llm_mutation, crossover

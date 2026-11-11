@@ -5,6 +5,9 @@ from pathlib import Path
 import time
 import signal
 import sys
+import pytest
+
+pytestmark = pytest.mark.dataset
 
 def test_train_quick(tmp_path):
     """

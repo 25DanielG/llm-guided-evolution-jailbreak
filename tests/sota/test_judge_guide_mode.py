@@ -150,9 +150,9 @@ def test_default_mode_sends_todays_rubric_request(monkeypatch, default_env):
     assert result["score"] == pytest.approx(0.375) and "guide" not in result
 
 
-@pytest.mark.parametrize("mode, harmful_score, passes", [("rubric", 0.0, True), ("rubric", 1e-6, False),
-                                                         ("guide", 1e-6, True), ("guide", 0.6, False)])
-def test_smoke_refusal_check_per_mode(monkeypatch, default_env, mode, harmful_score, passes):
+@pytest.mark.parametrize("mode, harmful_score, passes", [("rubric", 0.0, True), ("rubric", 1e-6, True),
+                                                         ("guide", 1e-6, True), ("guide", 0.6, True)])
+def test_smoke_scores_are_informational(monkeypatch, default_env, mode, harmful_score, passes):
     smoke_test = importlib.import_module("smoke_test")
     monkeypatch.setenv("JB_JUDGE_PROMPT", mode)
     monkeypatch.setattr(smoke_test.vllm_client, "wait_ready", lambda *args, **kwargs: True)
@@ -181,3 +181,14 @@ def test_chat_payload_extras_are_opt_in_and_survive_retries(monkeypatch):
     assert payloads[0] == {"model": "judge", "messages": messages, "max_tokens": 3, "temperature": 0.0}
     assert payloads[1] == payloads[2] == {"model": "judge", "messages": messages, "max_tokens": 1, "temperature": 0.0,
                                           "logprobs": True, "top_logprobs": 20, **GUIDE_EXTRA}
+
+
+@pytest.mark.parametrize('failure', ['endpoint', 'parse', 'empty', 'cache'])
+def test_smoke_main_rejects_broken_exchange(monkeypatch, default_env, failure):
+    smoke = importlib.import_module('smoke_test')
+    monkeypatch.setattr(smoke.vllm_client, 'wait_ready', lambda *a, **kw: failure != 'endpoint')
+    monkeypatch.setattr(smoke, '_one_harmful_behavior', lambda: 'fixture request')
+    monkeypatch.setattr(smoke, '_query', lambda *a: (None, {'text': '' if failure == 'empty' else RESPONSE}))
+    monkeypatch.setattr(smoke.cache, 'get', lambda *a: None if failure == 'cache' else 'hit')
+    monkeypatch.setattr(smoke.judge, 'score_response', lambda *a: {'score': 0.6, 'parse_ok': failure != 'parse', 'filter': None})
+    assert smoke.main() == 1
