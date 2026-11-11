@@ -11,18 +11,22 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Python 3.13
-        uses: actions/setup-python@v3
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
-
-      - name: Run Python application workflow
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          LLMGE_AUTO_START_SERVER: "0"
-        run: scripts/workflows/python_app_no_lint.sh
-        shell: bash
+          python-version: "3.12"
+      - name: Prepare CPU test environment
+        run: bash scripts/workflows/setup_python_ci.sh
+      - name: Run deterministic Python tests
+        timeout-minutes: 12
+        run: bash scripts/workflows/python_app_no_lint.sh
+      - name: Upload unit test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-unit-results
+          path: tests/results/unit.xml
+          if-no-files-found: warn

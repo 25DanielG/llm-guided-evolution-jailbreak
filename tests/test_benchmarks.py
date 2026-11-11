@@ -4,7 +4,7 @@ LLMGE Benchmark Tests — Mutation Quality Comparison
 Compares new LLM mutations against saved baselines to track whether
 model quality improves or regresses over time.
 
-Tests always PASS — they report results via print output.
+Live-only benchmarks. Infrastructure failures fail the test; quality comparisons are reported.
 
 Requires: LLM server running, mutated_baselines.csv generated.
 
@@ -15,7 +15,10 @@ import os
 import ast
 import csv
 import subprocess
+import sys
 import pytest
+
+pytestmark = [pytest.mark.live_inference, pytest.mark.usefixtures("live_llm")]
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SOTA = os.path.join(ROOT, 'sota', 'Titanic')
@@ -86,10 +89,10 @@ def _check_syntax(filepath):
 # ── 1. Mutation benchmark ─────────────────────────────────────────────────
 
 @pytest.mark.parametrize('gene_id', VALID_INDIVIDUALS)
-def test_mutation_benchmark(gene_id, tmp_path):
+def test_mutation_benchmark(gene_id, tmp_path, titanic_eval):
     """Mutate, check syntax, evaluate, compare against saved baseline.
 
-    This test always PASSES. Use -s to see comparison output.
+    Requires explicit live inference; use -s to inspect scientific comparisons.
     """
     baselines = _load_baselines()
     if gene_id not in baselines:
@@ -102,19 +105,20 @@ def test_mutation_benchmark(gene_id, tmp_path):
 
     # ── Step 1: Mutate ──
     parent = os.path.join(INDIVIDUALS_DIR, f'model_{gene_id}.py')
-    child = os.path.join(str(tmp_path), f'mutated_{gene_id}.py')
+    child = os.path.join(str(tmp_path), f'model_mutated_{gene_id}.py')
 
     mut_result = subprocess.run(
-        ['uv', 'run', 'python', 'src/llm_mutation.py',
+        [sys.executable, 'src/llm_mutation.py',
          parent, child, prompt,
          '--top_p', '0.1', '--temperature', '0.17',
          '--apply_quality_control', 'False'],
-        cwd=ROOT, capture_output=True, text=True, timeout=10000
+        cwd=ROOT, capture_output=True, text=True, timeout=120
     )
 
     if mut_result.returncode != 0 or not os.path.isfile(child):
-        print(f"\n  {gene_id}: mutation pipeline failed -- cannot benchmark")
-        return
+        pytest.fail(f"{gene_id}: mutation pipeline failed: {mut_result.stderr[-300:]}")
+
+    assert 'Request failed:' not in mut_result.stdout and 'Error:' not in mut_result.stdout, mut_result.stdout[-1000:]
 
     # ── Step 2: Check syntax ──
     new_syntax_ok, syntax_detail = _check_syntax(child)
@@ -137,12 +141,8 @@ def test_mutation_benchmark(gene_id, tmp_path):
         print(f"  {gene_id} EVAL: skipped (invalid syntax)")
         return
 
-    eval_result = subprocess.run(
-        ['uv', 'run', 'python', EVAL_SCRIPT,
-         '--model', f'mutated_{gene_id}',
-         '--variant_dir', str(tmp_path)],
-        cwd=ROOT, capture_output=True, text=True, timeout=10000
-    )
+    sandbox, evaluate = titanic_eval
+    eval_result = evaluate(f'model_mutated_{gene_id}', tmp_path)
 
     if eval_result.returncode != 0:
         if baseline['fp'] is not None:
@@ -152,10 +152,9 @@ def test_mutation_benchmark(gene_id, tmp_path):
         return
 
     # ── Step 4: Read new results and compare ──
-    results_file = os.path.join(RESULTS_DIR, f'{gene_id}_results.csv')
+    results_file = sandbox / 'results' / f'mutated_{gene_id}_results.csv'
     if not os.path.isfile(results_file):
-        print(f"  {gene_id} EVAL: no results file")
-        return
+        pytest.fail(f"Missing evaluation result: {results_file}")
 
     with open(results_file) as f:
         lines = f.readlines()
@@ -223,10 +222,10 @@ def _load_crossover_baselines():
 
 
 @pytest.mark.parametrize('gene_id_x, gene_id_y', CROSSOVER_PAIRS)
-def test_crossover_benchmark(gene_id_x, gene_id_y, tmp_path):
+def test_crossover_benchmark(gene_id_x, gene_id_y, tmp_path, titanic_eval):
     """Cross two individuals, check syntax, evaluate, compare against saved baseline.
 
-    This test always PASSES. Use -s to see comparison output.
+    Requires explicit live inference; use -s to inspect scientific comparisons.
     """
     baselines = _load_crossover_baselines()
     pair_key = (gene_id_x, gene_id_y)
@@ -241,13 +240,14 @@ def test_crossover_benchmark(gene_id_x, gene_id_y, tmp_path):
     crossed_output = os.path.join(str(tmp_path), f'model_crossed_{gene_id_x}_{gene_id_y}.py')
 
     cross_result = subprocess.run(
-        ['uv', 'run', 'python', CROSSOVER_SCRIPT, input_x, input_y, crossed_output],
-        cwd=ROOT, capture_output=True, text=True, timeout=10000
+        [sys.executable, CROSSOVER_SCRIPT, input_x, input_y, crossed_output],
+        cwd=ROOT, capture_output=True, text=True, timeout=120
     )
 
     if cross_result.returncode != 0 or not os.path.isfile(crossed_output):
-        print(f"\n  ({gene_id_x}, {gene_id_y}): crossover pipeline failed -- cannot benchmark")
-        return
+        pytest.fail(f"crossover pipeline failed: {cross_result.stderr[-300:]}")
+
+    assert 'Request failed:' not in cross_result.stdout and 'Error:' not in cross_result.stdout, cross_result.stdout[-1000:]
 
     # ── Step 2: Check syntax ──
     new_syntax_ok, syntax_detail = _check_syntax(crossed_output)
@@ -270,12 +270,8 @@ def test_crossover_benchmark(gene_id_x, gene_id_y, tmp_path):
         print(f"  ({gene_id_x}, {gene_id_y}) EVAL: skipped (invalid syntax)")
         return
 
-    eval_result = subprocess.run(
-        ['uv', 'run', 'python', EVAL_SCRIPT,
-         '--model', f'model_crossed_{gene_id_x}_{gene_id_y}',
-         '--variant_dir', str(tmp_path)],
-        cwd=ROOT, capture_output=True, text=True, timeout=10000
-    )
+    sandbox, evaluate = titanic_eval
+    eval_result = evaluate(f'model_crossed_{gene_id_x}_{gene_id_y}', tmp_path)
 
     if eval_result.returncode != 0:
         if baseline['fp'] is not None:
@@ -286,10 +282,9 @@ def test_crossover_benchmark(gene_id_x, gene_id_y, tmp_path):
 
     # ── Step 4: Read new results and compare ──
     crossed_gene_id = f'crossed_{gene_id_x}_{gene_id_y}'
-    results_file = os.path.join(RESULTS_DIR, f'{crossed_gene_id}_results.csv')
+    results_file = sandbox / 'results' / f'{crossed_gene_id}_results.csv'
     if not os.path.isfile(results_file):
-        print(f"  ({gene_id_x}, {gene_id_y}) EVAL: no results file")
-        return
+        pytest.fail(f"Missing evaluation result: {results_file}")
 
     with open(results_file) as f:
         lines = f.readlines()

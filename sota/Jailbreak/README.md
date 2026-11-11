@@ -202,6 +202,22 @@ cell elites.
 Logs print mean judge score, in-loop success rate at the verification threshold,
 verified success rate, and avg prompt tokens.
 
+### Plotting a completed MAP-Elites comparison
+
+After generating both report directories with `make_baseline_report.py`, create
+presentation-ready PNG and SVG figures with:
+
+```bash
+uv run python sota/Jailbreak/plot_run_comparison.py \
+  --map-run <map_run_id> \
+  --baseline-run <nsga2_run_id>
+```
+
+By default, the script reads `comparison/map_elites/genes.csv` and
+`comparison/nsga2/genes.csv`, then writes archive coverage, final archive
+heatmaps, a three-objective Pareto candidate plot, verified-performance bars,
+and `comparison_summary.csv` under `comparison/figures/`.
+
 Inspect one gene with `python sota/Jailbreak/individual_card.py <gene_id>`.
 
 Run focused tests without the repository's Slurm-backed test fixture:
