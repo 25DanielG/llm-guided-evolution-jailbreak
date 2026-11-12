@@ -52,7 +52,11 @@ FORMAT_STRATEGIES = (
     "transcript",
 )
 TURN_DEPTHS = ("zero", "one_or_two", "three_plus")
-DEPTH_LABELS = ("0 turns", "1–2 turns", "3+ turns")
+DEPTH_LABELS = (
+    "0 prior messages",
+    "1–2 prior messages",
+    "3+ prior messages",
+)
 METHOD_COLORS = {
     "MAP-Elites": "#B3A369",
     "NSGA-II": "#003057",
@@ -224,6 +228,52 @@ def checkpoint_coverage(root: Path, run_id: str) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def checkpoint_population_fitness(root: Path, run_id: str) -> pd.DataFrame:
+    """Load the population-relative fitness saved after every generation.
+
+    Diversity is computed by the controller after independent evaluations
+    finish. Historical result CSVs therefore contain a zero placeholder, while
+    checkpoints contain the exact diversity values used by selection.
+    """
+    checkpoint_dir = root / run_id / "ckpt"
+    paths: list[tuple[int, Path]] = []
+    for path in checkpoint_dir.glob("checkpoint_gen_*.pkl"):
+        match = CHECKPOINT_RE.search(path.name)
+        if match:
+            paths.append((int(match.group(1)), path))
+    if not paths:
+        raise FileNotFoundError(f"no checkpoints found under {checkpoint_dir}")
+
+    _register_checkpoint_types(root)
+    rows = []
+    for generation, path in sorted(paths):
+        with path.open("rb") as file:
+            payload = pickle.load(file)
+        population = (
+            payload.get("population", []) if isinstance(payload, dict) else []
+        )
+        for individual in population:
+            fitness = tuple(getattr(individual.fitness, "values", ()))
+            if len(fitness) < 3:
+                continue
+            rows.append(
+                {
+                    "generation": generation,
+                    "gene_id": individual[0],
+                    "judge_mean": float(fitness[0]),
+                    "diversity": float(fitness[1]),
+                    "avg_prompt_tokens": float(fitness[2]),
+                }
+            )
+    if not rows:
+        raise ValueError(
+            f"checkpoints in {checkpoint_dir} do not contain population fitness"
+        )
+    return pd.DataFrame(rows).drop_duplicates(
+        subset=["generation", "gene_id"], keep="last"
+    )
+
+
 def _scaled_marker_sizes(tokens: Iterable[float]) -> np.ndarray:
     values = np.asarray(list(tokens), dtype=float)
     finite = np.isfinite(values)
@@ -256,11 +306,12 @@ def plot_pareto(
     legend_handles = []
 
     for method, frame in frames.items():
+        objectives = frame[
+            ["judge_mean", "diversity", "avg_prompt_tokens"]
+        ].to_numpy(dtype=float)
         candidates = frame.loc[
             frame["generation"].between(0, 98)
-            & frame[["judge_mean", "diversity", "avg_prompt_tokens"]]
-            .notna()
-            .all(axis=1)
+            & np.isfinite(objectives).all(axis=1)
         ].copy()
         sizes = _scaled_marker_sizes(candidates["avg_prompt_tokens"])
         color = METHOD_COLORS[method]
@@ -316,8 +367,9 @@ def plot_pareto(
     figure.text(
         0.5,
         0.025,
-        "Marker size represents prompt length; outlined candidates are "
-        "nondominated on judge ↑, diversity ↑, tokens ↓.",
+        "Checkpoint population snapshots. Marker size represents prompt "
+        "length; outlined candidates are nondominated on judge ↑, "
+        "diversity ↑, tokens ↓.",
         ha="center",
         fontsize=9,
     )
@@ -416,7 +468,7 @@ def plot_heatmaps(
                     column, row, label, ha="center", va="center", color=color
                 )
         axis.set_xlabel("Prompt-format strategy")
-    axes[0].set_ylabel("Conversation depth")
+    axes[0].set_ylabel("Prior conversation messages")
     if image is not None:
         colorbar = figure.colorbar(image, ax=axes, shrink=0.86)
         colorbar.set_label("Elite judge score")
@@ -557,6 +609,10 @@ def main() -> None:
         "MAP-Elites": checkpoint_coverage(root, args.map_run),
         "NSGA-II": checkpoint_coverage(root, args.baseline_run),
     }
+    fitness_histories = {
+        "MAP-Elites": checkpoint_population_fitness(root, args.map_run),
+        "NSGA-II": checkpoint_population_fitness(root, args.baseline_run),
+    }
     final_generations = {
         method: int(history["generation"].max())
         for method, history in histories.items()
@@ -568,9 +624,14 @@ def main() -> None:
 
     plot_coverage(histories, output_dir, args.dpi)
     plot_heatmaps(archives, output_dir, args.dpi)
-    plot_pareto(frames, output_dir, args.dpi)
+    plot_pareto(fitness_histories, output_dir, args.dpi)
     plot_verified_performance(summaries, output_dir, args.dpi)
     write_summary(summaries, archives, output_dir)
+    for method, history in fitness_histories.items():
+        stem = method.lower().replace("-", "").replace(" ", "_")
+        history.to_csv(
+            output_dir / f"{stem}_fitness_history.csv", index=False
+        )
 
     print(f"Wrote comparison figures to {output_dir}")
     for path in sorted(output_dir.iterdir()):

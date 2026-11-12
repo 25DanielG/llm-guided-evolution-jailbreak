@@ -179,6 +179,17 @@ DIVERSITY_OBJ_INDEX = 1
 # The MAP-Elites archive is updated after every evaluated generation and is
 # checkpointed independently from the current population.
 SELECTION_METHOD = os.getenv("JB_SELECTION", "map_elites").lower()
+# Keep the initial comparison population balanced across zero, shallow, and
+# deep prior-message bins. This applies to every selection method so MAP-Elites
+# and baselines start from the same reachable behavior space.
+BALANCE_TURN_DEPTHS = os.getenv(
+    "JB_BALANCE_TURN_DEPTHS", "true"
+).lower() in ("true", "1", "yes")
+# When the LLM selects trait_turns for mutation, coerce the result into a
+# randomly chosen valid depth bin instead of relying on it to add/remove turns.
+STRUCTURAL_TURN_DEPTH_MUTATION = os.getenv(
+    "JB_STRUCTURAL_TURN_DEPTH_MUTATION", "true"
+).lower() in ("true", "1", "yes")
 # "mad" = per-case median absolute deviation, or a float applied to every case.
 LEXICASE_EPSILON = os.getenv("JB_LEXICASE_EPSILON", "mad")
 """

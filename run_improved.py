@@ -7,6 +7,7 @@ import string
 import random
 import pickle
 import argparse
+import csv
 import subprocess
 import yaml
 import numpy as np
@@ -16,10 +17,15 @@ import urllib.request
 import urllib.error
 from deap import base, creator, tools
 from deap.tools import HallOfFame, ParetoFront
-from functools import partial
 from src.utils.print_utils import print_population, print_scores, box_print, print_job_info
 from src.llm_utils import split_file, retrieve_base_code
-from src.map_elites import ArchiveDecision, MapElitesArchive, descriptor_from_file
+from src.map_elites import (
+    TURN_DEPTHS,
+    ArchiveDecision,
+    MapElitesArchive,
+    descriptor_from_file,
+    rewrite_turn_depth_file,
+)
 from src import checkpointing
 from src.cfg.constants import *
 from src.cfg import constants
@@ -404,7 +410,28 @@ def generate_random_string(length=20):
     random_string = 'xXx'+random_string
     return random_string
     
-def create_individual(container, llm_model, temp_min=0.05, temp_max=0.4):
+def _apply_requested_turn_depth(gene_id):
+    """Apply a deterministic initial depth after the mutation job finishes."""
+    target = GLOBAL_DATA.get(gene_id, {}).get("turn_depth_target")
+    if target is None:
+        return
+    variant_path = os.path.join(VARIANT_DIR, f"{MODEL}_{gene_id}.py")
+    rewrite_turn_depth_file(variant_path, target)
+    actual = descriptor_from_file(variant_path).conversation_depth
+    if actual != target:
+        raise RuntimeError(
+            f"failed to place {gene_id} in turn-depth bin {target}: got {actual}"
+        )
+    print(f"\t‣ Assigned {gene_id} to prior-message depth {target}", flush=True)
+
+
+def create_individual(
+    container,
+    llm_model,
+    temp_min=0.05,
+    temp_max=0.4,
+    desired_turn_depth=None,
+):
     box_print("Create Individual", print_bbox_len=60, new_line_end=False)
     out_dir = os.path.join(OUTPUT_DIR, str(GENERATION))
     config = load_yaml()
@@ -421,8 +448,9 @@ def create_individual(container, llm_model, temp_min=0.05, temp_max=0.4):
                                             llm_model=llm_model,
                                             job_name="create_individual",
                                             top_p=0.1, temperature=temperature)
-    GLOBAL_DATA[gene_id] = {'sub_flag':successful_sub_flag, 'job_id':job_id, 
-                            'status':'subbed file', 'fitness':None, 'start_time':time.time()}
+    GLOBAL_DATA[gene_id] = {'sub_flag':successful_sub_flag, 'job_id':job_id,
+                            'status':'subbed file', 'fitness':None, 'start_time':time.time(),
+                            'turn_depth_target': desired_turn_depth}
     GLOBAL_DATA_ANCESTRY[gene_id] = {'GENES':[gene_id], 'MUTATE_TYPE':["CREATED"]}
     
     individual = container([gene_id])  # Assign a file ID
@@ -438,6 +466,8 @@ def create_individual(container, llm_model, temp_min=0.05, temp_max=0.4):
         else:
             print(f'Checking completion for {gene_id}', flush=True)
         job_done = check4job_completion(job_id=job_id, local_output=local_output, extension="evolution/")
+        if job_done:
+            _apply_requested_turn_depth(gene_id)
         print(f'Model Files for {gene_id} are Loaded') if job_done else print(f'Error Loading Model Files for {gene_id}', flush=True)
     return individual
 
@@ -754,6 +784,29 @@ def _tfidf_diversity(docs):
         div.append(max(0.0, min(1.0, 1.0 - mean_sim)))
     return div
 
+
+def _persist_diversity_result(gene_id, diversity):
+    """Persist the post-evaluation diversity value used by selection.
+
+    ``eval.py`` initially writes a zero placeholder because it evaluates genes
+    independently. The controller computes population-relative diversity later,
+    so reporting must receive the same updated value instead of the placeholder.
+    """
+    csv_path = _gene_result_path(gene_id, "csv")
+    with open(csv_path, newline="", encoding="utf-8") as file:
+        rows = list(csv.reader(file))
+    if len(rows) < 2 or "diversity" not in rows[0]:
+        raise ValueError(f"malformed gene result CSV: {csv_path}")
+    diversity_index = rows[0].index("diversity")
+    for row in rows[1:]:
+        if len(row) <= diversity_index:
+            raise ValueError(f"malformed gene result row: {csv_path}")
+        row[diversity_index] = f"{float(diversity):.12g}"
+    temporary_path = f"{csv_path}.{os.getpid()}.tmp"
+    with open(temporary_path, "w", newline="", encoding="utf-8") as file:
+        csv.writer(file).writerows(rows)
+    os.replace(temporary_path, csv_path)
+
 def apply_diversity_objective(population):
     """Fill the diversity fitness dimension across an evaluated group (the
     per-gene eval subprocess has no view of the population, so it writes a
@@ -784,6 +837,7 @@ def apply_diversity_objective(population):
         gd = GLOBAL_DATA.get(gene_id)
         if gd and isinstance(gd.get("fitness"), (list, tuple)):
             f = list(gd["fitness"]); f[div_idx] = scores[gene_id]; gd["fitness"] = tuple(f)
+        _persist_diversity_result(gene_id, scores[gene_id])
     box_print(f"Applied diversity objective to {len(scores)} genes", print_bbox_len=60, new_line_end=False)
 
 def check_and_update_fitness(population, timeout=EVAL_NO_PROGRESS_TIMEOUT_SECONDS, loop_delay=60):
@@ -937,6 +991,8 @@ def delayed_creation_check(offspring):
                     job_id = GLOBAL_DATA[k]["job_id"]
                     print(f'Checking for Job Completion: {job_id} for {gene_id}', flush=True)
                     job_done = check4job_completion(job_id, extension="evolution/")
+                    if job_done:
+                        _apply_requested_turn_depth(gene_id)
                   
     return offspring
 
@@ -1313,9 +1369,28 @@ def map_elites_select(pop, k):
         return true_nsga2(pop, k)
     return [copy.deepcopy(random.choice(elites)) for _ in range(k)]
 
+def initial_turn_depth_targets(n):
+    """Return a balanced, shuffled depth assignment for a new population."""
+    enabled = (
+        globals().get("BALANCE_TURN_DEPTHS", False)
+        and globals().get("MODEL") == "prompt"
+        and "Jailbreak" in globals().get("TRAIN_FILE", "")
+    )
+    if not enabled:
+        return [None] * n
+    targets = [TURN_DEPTHS[index % len(TURN_DEPTHS)] for index in range(n)]
+    random.shuffle(targets)
+    return targets
+
+
 def create_population(n, llm_model):
-    individual_func = partial(toolbox.individual, llm_model=llm_model)
-    return tools.initRepeat(list, individual_func, n)
+    return [
+        toolbox.individual(
+            llm_model=llm_model,
+            desired_turn_depth=target,
+        )
+        for target in initial_turn_depth_targets(n)
+    ]
 
 # Define the problem
 creator.create("FitnessMulti", base.Fitness, weights=FITNESS_WEIGHTS)  # Adjust weights as needed

@@ -28,7 +28,8 @@ candidates against HarmBench and logs the in-loop/reporting score gap
 
 Objectives (order matches `FITNESS_WEIGHTS`): `mean_judge_score` (maximize),
 `diversity` (maximize; TF-IDF novelty vs the generation, filled by
-`run_improved.py` post-eval), `avg_prompt_tokens` (minimize). Per-behavior detail
+`run_improved.py` post-eval and persisted back to the result CSV),
+`avg_prompt_tokens` (minimize). Per-behavior detail
 (including the rubric and reporting/verification results) is written to
 `results/<gene_id>_results.json` alongside the CSV.
 
@@ -36,9 +37,16 @@ Objectives (order matches `FITNESS_WEIGHTS`): `mean_judge_score` (maximize),
 
 Jailbreak runs use MAP-Elites parent selection by default (`JB_SELECTION=map_elites`).
 Each evaluated prompt is classified without importing or executing its source into one
-of 18 cells: six prompt-format strategies crossed with three conversation-depth bins.
+of 18 cells: six prompt-format strategies crossed with three rendered prior-message
+bins (0, 1–2, or 3+ messages).
 The best prompt in each occupied cell is retained, and parent cells are sampled uniformly,
 so one common prompt style cannot crowd every other style out of the search.
+
+New populations are balanced across the three depth bins, and mutations of the
+`trait_turns` segment structurally move prompts between reachable bins. This prevents
+the seed's initial two-message conversation from making the zero-message row practically
+unreachable. Set `JB_BALANCE_TURN_DEPTHS=0` or
+`JB_STRUCTURAL_TURN_DEPTH_MUTATION=0` only for backward-compatibility experiments.
 
 Within a cell, replacement is decided by overall judge score, then hard, medium, and easy
 behavior scores, prompt novelty, and finally lower token cost. The archive is saved in each
@@ -214,9 +222,12 @@ uv run python sota/Jailbreak/plot_run_comparison.py \
 ```
 
 By default, the script reads `comparison/map_elites/genes.csv` and
-`comparison/nsga2/genes.csv`, then writes archive coverage, final archive
-heatmaps, a three-objective Pareto candidate plot, verified-performance bars,
-and `comparison_summary.csv` under `comparison/figures/`.
+`comparison/nsga2/genes.csv` for verified performance. It reads population
+fitness directly from each run's checkpoints for the Pareto plot, because those
+checkpoints preserve the generation-relative diversity values used by selection.
+It writes archive coverage, final archive heatmaps, a three-objective Pareto
+candidate plot, verified-performance bars, fitness-history CSVs, and
+`comparison_summary.csv` under `comparison/figures/`.
 
 Inspect one gene with `python sota/Jailbreak/individual_card.py <gene_id>`.
 

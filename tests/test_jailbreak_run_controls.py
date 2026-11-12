@@ -37,6 +37,8 @@ class JailbreakRunControlTests(unittest.TestCase):
         self.assertEqual(values["start_population_size"], 24)
         self.assertEqual(values["population_size"], 24)
         self.assertEqual(values["SELECTION_METHOD"], "map_elites")
+        self.assertTrue(values["BALANCE_TURN_DEPTHS"])
+        self.assertTrue(values["STRUCTURAL_TURN_DEPTH_MUTATION"])
 
     def test_environment_can_request_a_small_bootstrap_population(self):
         values = load_constants({
@@ -50,6 +52,15 @@ class JailbreakRunControlTests(unittest.TestCase):
         self.assertEqual(values["start_population_size"], 12)
         self.assertEqual(values["population_size"], 12)
         self.assertEqual(values["SELECTION_METHOD"], "nsga2")
+
+    def test_environment_can_disable_depth_controls(self):
+        values = load_constants({
+            "JB_BALANCE_TURN_DEPTHS": "0",
+            "JB_STRUCTURAL_TURN_DEPTH_MUTATION": "false",
+        })
+
+        self.assertFalse(values["BALANCE_TURN_DEPTHS"])
+        self.assertFalse(values["STRUCTURAL_TURN_DEPTH_MUTATION"])
 
 
 if __name__ == "__main__":

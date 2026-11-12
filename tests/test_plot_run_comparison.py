@@ -111,6 +111,17 @@ class _FakeArchive:
         return self.occupied
 
 
+class _FakeFitness:
+    def __init__(self, values):
+        self.values = values
+
+
+class _FakeIndividual(list):
+    def __init__(self, gene_id, fitness):
+        super().__init__([gene_id])
+        self.fitness = _FakeFitness(fitness)
+
+
 def test_checkpoint_coverage_orders_generations(tmp_path, monkeypatch):
     checkpoint_dir = tmp_path / "run" / "ckpt"
     checkpoint_dir.mkdir(parents=True)
@@ -126,6 +137,32 @@ def test_checkpoint_coverage_orders_generations(tmp_path, monkeypatch):
 
     assert history["generation"].tolist() == [2, 10]
     assert history["occupied_cells"].tolist() == [3, 8]
+
+
+def test_checkpoint_population_fitness_uses_saved_diversity(
+    tmp_path, monkeypatch
+):
+    checkpoint_dir = tmp_path / "run" / "ckpt"
+    checkpoint_dir.mkdir(parents=True)
+    with (checkpoint_dir / "checkpoint_gen_3.pkl").open("wb") as file:
+        pickle.dump(
+            {
+                "population": [
+                    _FakeIndividual("a", (0.72, 0.41, 220.0)),
+                    _FakeIndividual("b", (0.65, 0.63, 180.0)),
+                ]
+            },
+            file,
+        )
+    monkeypatch.setattr(
+        plotting, "_register_checkpoint_types", lambda root: None
+    )
+
+    history = plotting.checkpoint_population_fitness(tmp_path, "run")
+
+    assert history["generation"].tolist() == [3, 3]
+    assert history["gene_id"].tolist() == ["a", "b"]
+    assert history["diversity"].tolist() == [0.41, 0.63]
 
 
 def test_plot_functions_write_png_and_svg(tmp_path):

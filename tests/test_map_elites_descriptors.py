@@ -9,9 +9,11 @@ from src.map_elites import (
     PromptDescriptor,
     classify_format,
     classify_turn_depth,
+    coerce_turn_depth,
     descriptor_from_file,
     descriptor_from_source,
     extract_trait_assignments,
+    rewrite_turn_depth_source,
 )
 
 
@@ -27,12 +29,58 @@ def test_classify_each_supported_format(format_type):
 
 
 @pytest.mark.parametrize(
-    ("turn_count", "expected"),
-    [(0, "zero"), (1, "one_or_two"), (2, "one_or_two"), (3, "three_plus"), (6, "three_plus")],
+    ("turns", "expected"),
+    [
+        ([], "zero"),
+        ([('user', 'dangling')], "zero"),
+        ([('assistant', 'leading')], "zero"),
+        ([('user', 'first'), ('assistant', 'second')], "one_or_two"),
+        (
+            [
+                ('user', 'first'),
+                ('assistant', 'second'),
+                ('user', 'third'),
+                ('assistant', 'fourth'),
+            ],
+            "three_plus",
+        ),
+    ],
 )
-def test_classify_turn_depth(turn_count, expected):
-    turns = "<turns>" + '<turn role="user">text</turn>' * turn_count + "</turns>"
-    assert classify_turn_depth(turns) == expected
+def test_classify_turn_depth_matches_rendered_prior_messages(turns, expected):
+    trait = "<turns>" + "".join(
+        f'<turn role="{role}">{text}</turn>' for role, text in turns
+    ) + "</turns>"
+    assert classify_turn_depth(trait) == expected
+
+
+@pytest.mark.parametrize("target_depth", TURN_DEPTHS)
+def test_coerce_turn_depth_makes_every_bin_reachable(target_depth):
+    seed = (
+        '<turns><turn role="user">first</turn>'
+        '<turn role="assistant">second</turn></turns>'
+    )
+
+    coerced = coerce_turn_depth(seed, target_depth)
+
+    assert classify_turn_depth(coerced) == target_depth
+
+
+def test_rewrite_turn_depth_source_preserves_other_traits():
+    source = '''
+trait_format = """<format type="base64">{ASK}</format>"""
+trait_turns = """<turns>
+<turn role="user">first</turn>
+<turn role="assistant">second</turn>
+</turns>"""
+trait_style = "<style>unchanged</style>"
+'''
+
+    rewritten = rewrite_turn_depth_source(source, "three_plus")
+
+    assert descriptor_from_source(rewritten) == PromptDescriptor(
+        "base64", "three_plus"
+    )
+    assert 'trait_style = "<style>unchanged</style>"' in rewritten
 
 
 def test_descriptor_extracts_literal_traits_without_executing_code():
@@ -43,13 +91,15 @@ trait_turns = """<turns>
 <turn role="user">first</turn>
 <turn role="assistant">second</turn>
 <turn role="user">third</turn>
+<turn role="assistant">fourth</turn>
 </turns>"""
 '''
 
     assert extract_trait_assignments(source) == {
         "trait_format": '<format type="base64">{ASK}</format>',
         "trait_turns": '<turns>\n<turn role="user">first</turn>\n'
-        '<turn role="assistant">second</turn>\n<turn role="user">third</turn>\n</turns>',
+        '<turn role="assistant">second</turn>\n<turn role="user">third</turn>\n'
+        '<turn role="assistant">fourth</turn>\n</turns>',
     }
     assert descriptor_from_source(source) == PromptDescriptor("base64", "three_plus")
 

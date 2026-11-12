@@ -14,12 +14,13 @@ REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-from cfg.constants import *
-from utils.print_utils import box_print
+from src.cfg.constants import *
+from src.map_elites import TURN_DEPTHS, classify_turn_depth, coerce_turn_depth
+from src.utils.print_utils import box_print
 
-from llm_utils import (split_file, submit_mixtral, submit_mixtral_hf, 
-                       llm_code_qc, str2bool, generate_augmented_code, 
-                       extract_note, clean_code_from_llm, retrieve_base_code)
+from src.llm_utils import (split_file, submit_mixtral, submit_mixtral_hf,
+                           llm_code_qc, str2bool, generate_augmented_code,
+                           extract_note, clean_code_from_llm, retrieve_base_code)
 
 def _trait_assign_name(code_from_llm):
     """If code_from_llm is exactly one `trait_x = "..."` assignment, return
@@ -109,6 +110,17 @@ def _average_decoding(xval, yval):
     ty, py = parse(yval)
     return f'trait_decoding = \'<decoding temperature="{(tx+ty)/2:.2f}" top_p="{(px+py)/2:.2f}"/>\''
 
+
+def _mutate_turn_depth_structurally(code_from_llm):
+    """Move a generated turns trait to a different reachable depth bin."""
+    name, value = _trait_assign_name(code_from_llm)
+    if name != "trait_turns" or value is None:
+        return code_from_llm
+    current_depth = classify_turn_depth(value)
+    choices = [depth for depth in TURN_DEPTHS if depth != current_depth]
+    target_depth = str(np.random.choice(choices))
+    return f"trait_turns = {coerce_turn_depth(value, target_depth)!r}"
+
 def _read_feedback_summary(input_filename):
     try:
         variant_dir = os.path.dirname(os.path.abspath(input_filename))
@@ -184,6 +196,12 @@ def augment_network(input_filename='network.py', output_filename='network_x.py',
         if not valid_code:
             print(f"Rejected generated chunk: {invalid_reason}. Falling back to parent chunk.", flush=True)
             code_from_llm = code2llm.strip()
+
+    if (
+        expected_name == "trait_turns"
+        and globals().get("STRUCTURAL_TURN_DEPTH_MUTATION", False)
+    ):
+        code_from_llm = _mutate_turn_depth_structurally(code_from_llm)
 
     note_txt = extract_note(code2llm)
     parts[augment_idx] = f"\n{note_txt}{code_from_llm}\n"

@@ -1,8 +1,14 @@
 import json
 import pickle
 
+import pytest
+
 import run_improved
-from src.map_elites import MapElitesArchive, PromptDescriptor
+from src.map_elites import (
+    MapElitesArchive,
+    PromptDescriptor,
+    descriptor_from_file,
+)
 
 
 def _individual(gene_id, fitness):
@@ -104,3 +110,113 @@ def test_summary_reports_coverage(tmp_path, monkeypatch):
     assert payload["occupied_cells"] == 1
     assert payload["capacity"] == 18
     assert payload["elites"][0]["gene_id"] == "a"
+
+
+def test_initial_population_depth_targets_are_balanced(monkeypatch):
+    monkeypatch.setattr(run_improved, "BALANCE_TURN_DEPTHS", True)
+    monkeypatch.setattr(run_improved, "MODEL", "prompt")
+    monkeypatch.setattr(run_improved, "TRAIN_FILE", "sota/Jailbreak/eval.py")
+    monkeypatch.setattr(run_improved.random, "shuffle", lambda values: None)
+
+    targets = run_improved.initial_turn_depth_targets(6)
+
+    assert targets == [
+        "zero",
+        "one_or_two",
+        "three_plus",
+        "zero",
+        "one_or_two",
+        "three_plus",
+    ]
+
+
+def test_create_population_forwards_each_depth_target(monkeypatch):
+    targets = ["zero", "one_or_two", "three_plus"]
+    monkeypatch.setattr(
+        run_improved,
+        "initial_turn_depth_targets",
+        lambda size: targets[:size],
+    )
+    monkeypatch.setattr(
+        run_improved.toolbox,
+        "individual",
+        lambda llm_model, desired_turn_depth: (
+            llm_model,
+            desired_turn_depth,
+        ),
+    )
+
+    population = run_improved.create_population(3, "llama3")
+
+    assert population == [
+        ("llama3", "zero"),
+        ("llama3", "one_or_two"),
+        ("llama3", "three_plus"),
+    ]
+
+
+def test_requested_initial_depth_rewrites_generated_prompt(
+    tmp_path, monkeypatch
+):
+    variants = tmp_path / "variants"
+    variants.mkdir()
+    _write_prompt(variants, "a", turns=2)
+    monkeypatch.setattr(run_improved, "VARIANT_DIR", str(variants))
+    monkeypatch.setattr(run_improved, "MODEL", "prompt")
+    monkeypatch.setattr(
+        run_improved,
+        "GLOBAL_DATA",
+        {"a": {"turn_depth_target": "zero"}},
+    )
+
+    run_improved._apply_requested_turn_depth("a")
+
+    descriptor = descriptor_from_file(variants / "prompt_a.py")
+    assert descriptor.conversation_depth == "zero"
+
+
+def test_diversity_is_persisted_after_population_scoring(
+    tmp_path, monkeypatch
+):
+    results = tmp_path / "results"
+    results.mkdir()
+    monkeypatch.setenv("JB_GENE_RESULTS_DIR", str(results))
+    monkeypatch.setattr(run_improved, "box_print", lambda *args, **kwargs: None)
+
+    population = []
+    for gene_id, content in (("a", "alpha unique"), ("b", "beta distinct")):
+        (results / f"{gene_id}_results.csv").write_text(
+            "mean_judge_score,diversity,avg_prompt_tokens,easy_score,medium_score,hard_score\n"
+            "0.6,0.0,100,0.7,0.6,0.5\n",
+            encoding="utf-8",
+        )
+        (results / f"{gene_id}_results.json").write_text(
+            json.dumps(
+                {
+                    "behaviors": [
+                        {"messages": [{"role": "user", "content": content}]}
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        population.append(_individual(gene_id, (0.6, 0.0, 100.0)))
+    monkeypatch.setattr(
+        run_improved,
+        "GLOBAL_DATA",
+        {
+            gene_id: {"fitness": (0.6, 0.0, 100.0)}
+            for gene_id in ("a", "b")
+        },
+    )
+
+    run_improved.apply_diversity_objective(population)
+
+    for individual in population:
+        gene_id = individual[0]
+        diversity = individual.fitness.values[1]
+        assert diversity > 0
+        csv_value = (results / f"{gene_id}_results.csv").read_text(
+            encoding="utf-8"
+        ).splitlines()[1].split(",")[1]
+        assert float(csv_value) == pytest.approx(diversity)

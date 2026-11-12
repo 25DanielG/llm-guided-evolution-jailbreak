@@ -103,10 +103,13 @@ case "$BOOTSTRAP" in
         ;;
 esac
 export RUN_ID
+export JB_BALANCE_TURN_DEPTHS="${JB_BALANCE_TURN_DEPTHS:-1}"
+export JB_STRUCTURAL_TURN_DEPTH_MUTATION="${JB_STRUCTURAL_TURN_DEPTH_MUTATION:-1}"
 echo "Run configuration: run_id=$RUN_ID bootstrap=$BOOTSTRAP selection=$JB_SELECTION "\
      "stratified=$JB_STRATIFIED behaviors=$JB_N_BEHAVIORS_PER_EVAL "\
      "generations=${LLMGE_NUM_GENERATIONS:-17} start_population=${LLMGE_START_POPULATION_SIZE:-24} "\
-     "population=${LLMGE_POPULATION_SIZE:-24}"
+     "population=${LLMGE_POPULATION_SIZE:-24} balanced_depths=$JB_BALANCE_TURN_DEPTHS "\
+     "structural_depth_mutation=$JB_STRUCTURAL_TURN_DEPTH_MUTATION"
 # Fresh response/verdict cache per run so cached failures from older runs are not reused
 export JB_CACHE_DIR="${JB_CACHE_DIR:-$HOME/scratch/jb_cache_${RUN_ID}}"
 export JB_TARGET_MODEL_PATH="$TARGET_MODEL"
