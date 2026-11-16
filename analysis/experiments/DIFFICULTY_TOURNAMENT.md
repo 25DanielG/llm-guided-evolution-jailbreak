@@ -56,14 +56,15 @@ local Llama-3.1-8B HF mutator, and local HarmBench verifier. Set `--judge-model`
 `--mutator-model`, `--reporting-model`, or `--vllm-bin` only when preparing a new
 campaign. Changed models constitute a different experiment.
 
-Preparation hashes model files (including the full weight files), freezes the
-working source into an archive with per-file hashes, records its Git commit and
-base, and fingerprints Python/serving dependencies. Uncommitted implementation
-files are included; source hashes identify the exact snapshot. Commit the changes
-before preparing a publication run for a convenient named code revision.
-Runtime checks verify source/input hashes and dependency versions, plus unchanged
-model file sizes/mtimes. Full checkpoint hashing happens once at preparation,
-not six times on the shared filesystem. Do not modify model files in place.
+Preparation records resolved model paths, available origin revisions, small config
+hashes, and weight-file sizes/mtimes. **It neither copies nor hashes existing weight
+files.** It freezes the working source into an archive with per-file hashes, records
+its Git commit/base, and fingerprints Python/serving dependencies. Uncommitted
+implementation files are included; source hashes identify the exact snapshot.
+Commit the changes before preparing a publication run for a convenient code revision.
+Runtime checks verify source/input hashes, dependency versions, and unchanged model
+metadata. This is a lightweight deployment fingerprint, not a full weight-content
+integrity check. Do not modify model files in place.
 
 ## PACE execution
 

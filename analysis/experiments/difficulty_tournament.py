@@ -105,8 +105,22 @@ def model_inventory(path):
                    (p.suffix in ('.json', '.safetensors', '.bin', '.model', '.txt', '.jinja')))
     if not any(p.suffix in ('.safetensors', '.bin') for p in files):
         raise ValueError(f'No model weights in {path}')
-    return {'path': str(path), 'files': {p.name: {'sha256': digest(p), 'size': p.stat().st_size,
-                                               'mtime_ns': p.stat().st_mtime_ns} for p in files}}
+    # Never read multi-GB weight shards during preparation. Existing model files
+    # stay in place; the resolved path, origin revision, config and stat metadata
+    # identify the deployment without a costly full-checkpoint scan.
+    small_configs = {'config.json', 'generation_config.json', 'tokenizer_config.json',
+                     'special_tokens_map.json', 'model.safetensors.index.json',
+                     'pytorch_model.bin.index.json', 'difficulty_model_origin.json'}
+    inventory = {}
+    for item in files:
+        stat = item.stat()
+        info = {'size': stat.st_size, 'mtime_ns': stat.st_mtime_ns}
+        if item.name in small_configs:
+            info['sha256'] = digest(item)
+        inventory[item.name] = info
+    origin = path / 'difficulty_model_origin.json'
+    return {'path': str(path), 'fingerprint': 'config-hashes-and-file-metadata',
+            'origin': read_json(origin) if origin.exists() else None, 'files': inventory}
 
 
 def snapshot_source(destination):
@@ -150,7 +164,7 @@ def prepare(args):
     if args.final_generation < 1 or args.population < 6:
         raise ValueError('Need at least one generation and six initial individuals for retained elites')
     panel = freeze_panel(args.behaviors, args.n_behaviors, args.panel_mode == 'stratified')
-    # Validate inputs before creating artifacts. Hash large checkpoints once here.
+    # Validate inputs before creating artifacts; never scan or copy model weights.
     models = {role: model_inventory(getattr(args, role + '_model'))
               for role in ('target', 'judge', 'reporting', 'mutator')}
     python_bin = str(Path(sys.executable).absolute())

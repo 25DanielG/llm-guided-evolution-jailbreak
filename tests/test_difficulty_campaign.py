@@ -193,3 +193,19 @@ def test_unstratified_panel_requires_no_tiers_and_omits_tier_claims(tmp_path):
     assert all(row['tier'] == '' for row in panel)
     path.write_text('behavior\n' + ''.join(f'behavior{i}\n' for i in range(60)))
     assert freeze_panel(path) == panel
+
+
+def test_model_inventory_never_reads_weight_shards(tmp_path, monkeypatch):
+    from analysis.experiments import difficulty_tournament as campaign
+    (tmp_path / 'config.json').write_text('{}')
+    (tmp_path / 'model.safetensors').write_bytes(b'placeholder')
+    hashed = []
+    def small_digest(path):
+        assert path.suffix not in ('.safetensors', '.bin')
+        hashed.append(path.name)
+        return 'config-hash'
+    monkeypatch.setattr(campaign, 'digest', small_digest)
+    inventory = campaign.model_inventory(tmp_path)
+    assert hashed == ['config.json']
+    assert 'sha256' not in inventory['files']['model.safetensors']
+    assert inventory['files']['model.safetensors']['size'] == 11
