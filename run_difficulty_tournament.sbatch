@@ -2,7 +2,7 @@
 #SBATCH --job-name=difficulty-tournament
 #SBATCH --account=coc
 #SBATCH --qos=coe-ice
-#SBATCH --partition=ice-gpu
+#SBATCH --partition=coe-gpu
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --gres=gpu:5
