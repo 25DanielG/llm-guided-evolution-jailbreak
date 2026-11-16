@@ -2,14 +2,14 @@
 #SBATCH --job-name=difficulty-tournament
 #SBATCH --account=coc
 #SBATCH --qos=coe-ice
-#SBATCH --partition=coe-gpu
+#SBATCH --partition=ice-gpu,coe-gpu
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --gres=gpu:5
 #SBATCH --constraint=H200
 #SBATCH --cpus-per-task=48
 #SBATCH --mem=256G
-#SBATCH --time=16:00:00
+#SBATCH --time=03:00:00
 #SBATCH --signal=B:USR1@900
 #SBATCH --no-requeue
 #SBATCH --output=difficulty-%A_%a.out

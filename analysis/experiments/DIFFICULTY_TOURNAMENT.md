@@ -69,7 +69,9 @@ integrity check. Do not modify model files in place.
 ## PACE execution
 
 `run_difficulty_tournament.sbatch` requests **five H200 GPUs per task**, 48 CPUs,
-256 GB RAM, and 16 hours on `coe-gpu`, account `coc`, QoS `coe-ice`. Target uses one
+256 GB RAM, and three hours on either `ice-gpu` or `coe-gpu`, account `coc`, QoS
+`coe-ice`. The account permits 960 GPU-minutes per job; five GPUs for three
+hours consumes 900 GPU-minutes. Longer runs require checkpoint continuation. Target uses one
 GPU, the 70B judge two (tensor parallelism), verifier one, mutator one. Each task
 starts all four services concurrently, with bounded retries, isolated node-local
 compiler caches, loopback ports, and independent work/cache/output directories.
