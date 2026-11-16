@@ -148,7 +148,12 @@ def model_inventory(path):
             info['sha256'] = digest(item)
         inventory[item.name] = info
     origin = path / 'difficulty_model_origin.json'
-    return {'path': str(path), 'fingerprint': 'config-hashes-and-file-metadata',
+    config = read_json(path / 'config.json')
+    text_config = config.get('text_config') or config
+    max_model_len = min(4096, int(text_config.get('max_position_embeddings') or 4096))
+    if max_model_len < 1:
+        raise ValueError(f'Invalid context limit in {path / "config.json"}')
+    return {'path': str(path), 'max_model_len': max_model_len, 'fingerprint': 'config-hashes-and-file-metadata',
             'origin': read_json(origin) if origin.exists() else None, 'files': inventory}
 
 

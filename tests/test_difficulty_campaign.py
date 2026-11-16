@@ -262,3 +262,26 @@ def test_mutator_initialization_can_seed_before_loading_weights(monkeypatch, tmp
     with pytest.raises(StopBeforeModelLoad):
         namespace['_initialize'](SimpleNamespace(_validate_cuda_available=lambda: None))
     assert seeded == [42, 42]
+
+
+def test_classifier_context_is_capped_at_checkpoint_limit(tmp_path):
+    from analysis.experiments.difficulty_tournament import model_inventory
+    (tmp_path / 'config.json').write_text('{"max_position_embeddings": 2048}')
+    (tmp_path / 'model.safetensors').write_bytes(b'placeholder')
+    assert model_inventory(tmp_path)['max_model_len'] == 2048
+    (tmp_path / 'config.json').write_text('{"max_position_embeddings": 131072}')
+    assert model_inventory(tmp_path)['max_model_len'] == 4096
+
+
+def test_service_command_uses_per_model_context_limit(tmp_path, monkeypatch):
+    from analysis.experiments import difficulty_services as module
+    env = {'CUDA_VISIBLE_DEVICES': '0,1,2,3,4', 'DT_SEED': '42', 'DT_PYTHON': '/python'}
+    models = {role: {'path': '/models/' + role, 'max_model_len': 2048 if role == 'reporting' else 4096}
+              for role in ('target', 'judge', 'reporting')}
+    services = module.Services(tmp_path, tmp_path, env, models, '/vllm', 18000)
+    commands = {}
+    monkeypatch.setattr(services, 'start', lambda label, command, *args: commands.update({label: command}))
+    with services:
+        for role, limit in [('target', '4096'), ('judge', '4096'), ('reporting', '2048')]:
+            command = commands[role]
+            assert command[command.index('--max-model-len') + 1] == limit

@@ -106,7 +106,7 @@ class Services:
             command = [self.vllm_bin, 'serve', self.models[role]['path'],
                        '--served-model-name', role, '--host', '127.0.0.1', '--port', str(port),
                        '--dtype', 'bfloat16', '--tensor-parallel-size', str(tp),
-                       '--max-model-len', '4096', '--max-num-seqs', '64',
+                       '--max-model-len', str(self.models[role].get('max_model_len', 4096)), '--max-num-seqs', '64',
                        '--gpu-memory-utilization', '0.9', '--seed', self.env['DT_SEED']]
             commands.append((role, command, gpu, port, '/v1/models'))
         commands.append(('mutator', [self.env['DT_PYTHON'], '-m', 'uvicorn', 'server:app',
