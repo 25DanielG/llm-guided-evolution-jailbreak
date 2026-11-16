@@ -52,7 +52,12 @@ CAMPAIGN="$PWD/experiments/difficulty_tournament/v1"
 
 Defaults: 24 initial individuals, 16 evolutionary generations, six elites,
 mutation 0.8, crossover 0.15; Mistral-7B target, shared Llama-3.3-70B guide judge,
-local Llama-3.1-8B HF mutator, and local HarmBench verifier. Set `--judge-model`,
+local Llama-3.1-8B HF mutator, and local HarmBench verifier. The default vLLM executable is `~/.local/bin/vllm`, resolved to its actual
+serving environment. Preparation rejects CPU-only PyTorch or missing CUDA libraries
+before submission. The batch script loads `cuda/13.0.1`, matching the current
+CUDA 13 serving wheel; `DT_CUDA_MODULE` can explicitly override it.
+
+Set `--judge-model`,
 `--mutator-model`, `--reporting-model`, or `--vllm-bin` only when preparing a new
 campaign. Changed models constitute a different experiment.
 

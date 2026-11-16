@@ -209,3 +209,56 @@ def test_model_inventory_never_reads_weight_shards(tmp_path, monkeypatch):
     assert hashed == ['config.json']
     assert 'sha256' not in inventory['files']['model.safetensors']
     assert inventory['files']['model.safetensors']['size'] == 11
+
+
+@pytest.mark.parametrize('cuda,libraries,version', [(None, False, '2.13.0+cpu'), ('13.0', False, '2.13.0')])
+def test_serving_preflight_rejects_cpu_or_incomplete_torch(tmp_path, monkeypatch, cuda, libraries, version):
+    from analysis.experiments import difficulty_tournament as campaign
+    binary = tmp_path / 'bin/vllm'
+    binary.parent.mkdir()
+    binary.write_text('#!/bin/sh\n')
+    binary.chmod(0o700)
+    payload = {'torch': version, 'torch_cuda': cuda, 'cuda_libraries_present': libraries}
+    monkeypatch.setattr(campaign.subprocess, 'check_output', lambda *a, **kw: json.dumps(payload))
+    with pytest.raises(ValueError, match='CPU-only or incomplete'):
+        campaign.serving_fingerprint(binary)
+
+
+def test_serving_preflight_resolves_cli_symlink(tmp_path, monkeypatch):
+    from analysis.experiments import difficulty_tournament as campaign
+    binary = tmp_path / 'tools/vllm/bin/vllm'
+    binary.parent.mkdir(parents=True)
+    binary.write_text('#!/bin/sh\n')
+    binary.chmod(0o700)
+    link = tmp_path / 'vllm'
+    link.symlink_to(binary)
+    calls = []
+    def probe(command, **kwargs):
+        calls.append(command)
+        return json.dumps({'torch': '2.13.0', 'torch_cuda': '13.0', 'cuda_libraries_present': True})
+    monkeypatch.setattr(campaign.subprocess, 'check_output', probe)
+    resolved, info = campaign.serving_fingerprint(link)
+    assert resolved == str(binary)
+    assert calls[0][0] == str(binary.parent / 'python')
+    assert info['torch_cuda'] == '13.0'
+
+
+def test_mutator_initialization_can_seed_before_loading_weights(monkeypatch, tmp_path):
+    import ast
+    import os
+    tree = ast.parse(Path('server.py').read_text())
+    cls = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == 'LLMModel')
+    function = next(node for node in cls.body if isinstance(node, ast.FunctionDef) and node.name == '_initialize')
+    seeded = []
+    class StopBeforeModelLoad(Exception):
+        pass
+    def stop():
+        raise StopBeforeModelLoad
+    namespace = {'os': os, 'MODEL_PATH': str(tmp_path),
+                 'torch': SimpleNamespace(manual_seed=seeded.append,
+                    cuda=SimpleNamespace(manual_seed_all=seeded.append, device_count=stop))}
+    exec(compile(ast.Module(body=[function], type_ignores=[]), 'server.py', 'exec'), namespace)
+    monkeypatch.setenv('DT_SEED', '42')
+    with pytest.raises(StopBeforeModelLoad):
+        namespace['_initialize'](SimpleNamespace(_validate_cuda_available=lambda: None))
+    assert seeded == [42, 42]

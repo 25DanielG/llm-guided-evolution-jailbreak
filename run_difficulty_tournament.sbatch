@@ -27,7 +27,7 @@ cd "$SLURM_SUBMIT_DIR"
 campaign="$(realpath -e "$campaign")"
 python_bin="${DT_PYTHON:-$SLURM_SUBMIT_DIR/.venv/bin/python}"
 [[ -x "$python_bin" ]] || { echo "Missing Python: $python_bin" >&2; exit 2; }
-module load cuda
+module load "${DT_CUDA_MODULE:-cuda/13.0.1}"
 export PYTHONHASHSEED=0 PYTHONUNBUFFERED=1 CUDA_DEVICE_ORDER=PCI_BUS_ID
 export OMP_NUM_THREADS=4 TOKENIZERS_PARALLELISM=false
 attempt="$campaign/attempts/$stage-$SLURM_ARRAY_TASK_ID/$SLURM_JOB_ID"

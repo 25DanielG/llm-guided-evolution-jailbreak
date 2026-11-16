@@ -74,7 +74,6 @@ class LLMModel:
         # Resolve HF cache directories: if MODEL_PATH is a HF cache dir
         # (contains 'snapshots/'), find the actual model snapshot
         model_path = MODEL_PATH
-        import os
         snapshots_dir = os.path.join(model_path, 'snapshots')
         if os.path.isdir(snapshots_dir):
             # Use the latest snapshot

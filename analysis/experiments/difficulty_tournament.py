@@ -58,6 +58,35 @@ def versions():
     return result
 
 
+def serving_fingerprint(vllm_bin):
+    """Reject a CPU torch wheel without importing models or reading weight files."""
+    executable = Path(vllm_bin).expanduser().resolve()
+    if not os.access(executable, os.X_OK):
+        raise ValueError(f'Missing vLLM executable: {executable}')
+    probe = r"""
+import ast, importlib.metadata as metadata, importlib.util, json
+from pathlib import Path
+versions = {p: metadata.version(p) for p in ('vllm', 'torch', 'transformers')}
+torch_root = Path(importlib.util.find_spec('torch').origin).parent
+cuda = None
+for node in ast.parse((torch_root / 'version.py').read_text()).body:
+    target = node.target if isinstance(node, ast.AnnAssign) else None
+    if isinstance(node, ast.Assign) and len(node.targets) == 1:
+        target = node.targets[0]
+    if isinstance(target, ast.Name) and target.id == 'cuda':
+        cuda = ast.literal_eval(node.value)
+versions['torch_cuda'] = cuda
+versions['cuda_libraries_present'] = all((torch_root / 'lib' / name).is_file()
+    for name in ('libtorch_cuda.so', 'libc10_cuda.so'))
+print(json.dumps(versions))
+"""
+    result = json.loads(subprocess.check_output([str(executable.parent / 'python'), '-c', probe], text=True))
+    if not result['torch_cuda'] or not result['cuda_libraries_present'] or '+cpu' in result['torch']:
+        raise ValueError(f'CPU-only or incomplete PyTorch in {executable.parent.parent}; '
+                         'use --vllm-bin pointing to a CUDA-enabled serving environment')
+    return str(executable), result
+
+
 def freeze_panel(source, n=None, stratified=False):
     with Path(source).open(newline='') as stream:
         reader = csv.DictReader(stream)
@@ -168,12 +197,7 @@ def prepare(args):
     models = {role: model_inventory(getattr(args, role + '_model'))
               for role in ('target', 'judge', 'reporting', 'mutator')}
     python_bin = str(Path(sys.executable).absolute())
-    vllm_bin = str(Path(args.vllm_bin).expanduser().absolute())
-    if not os.access(vllm_bin, os.X_OK):
-        raise ValueError(f'Missing executable: {vllm_bin}')
-    vllm_python = str(Path(vllm_bin).parent / 'python')
-    serving_versions = json.loads(subprocess.check_output([vllm_python, '-c',
-        'import json,importlib.metadata as m; print(json.dumps({p:m.version(p) for p in ("vllm","torch","transformers")}))'], text=True))
+    vllm_bin, serving_versions = serving_fingerprint(args.vllm_bin)
     if any(v is None for v in versions().values()):
         raise ValueError('Experiment environment is missing required packages')
     subprocess.run(['git', 'merge-base', '--is-ancestor', BASE_COMMIT, 'HEAD'], cwd=ROOT, check=True)
@@ -218,9 +242,7 @@ def validate_runtime(manifest):
             raise ValueError(f'Campaign driver changed since preparation: {relative}')
     if versions() != manifest['versions']:
         raise ValueError('Experiment Python/dependency identity changed')
-    serving_python = str(Path(manifest['vllm_bin']).parent / 'python')
-    serving = json.loads(subprocess.check_output([serving_python, '-c',
-        'import json,importlib.metadata as m; print(json.dumps({p:m.version(p) for p in ("vllm","torch","transformers")}))'], text=True))
+    _, serving = serving_fingerprint(manifest['vllm_bin'])
     if serving != manifest['serving_versions']:
         raise ValueError('Serving environment changed')
     for model in manifest['models'].values():
@@ -457,7 +479,7 @@ def main(argv=None):
     prep.add_argument('--judge-model', default='/storage/ice-shared/vip-vvk/llm_storage/meta-llama/Llama-3.3-70B-Instruct')
     prep.add_argument('--reporting-model', default=str(local / 'HarmBench-Llama-2-13b-cls'))
     prep.add_argument('--mutator-model', default=str(local / 'Llama-3.1-8B-Instruct'))
-    prep.add_argument('--vllm-bin', default=str(Path.home() / 'scratch/llmge-vllm/bin/vllm'))
+    prep.add_argument('--vllm-bin', default=str(Path.home() / '.local/bin/vllm'))
     initial = commands.add_parser('initial')
     initial.add_argument('--index', type=int, required=True)
     initial.add_argument('--resume', choices=('new', 'required'), default='new')
