@@ -175,7 +175,7 @@ TRAIT_VALIDATION = "jailbreak_tags"
 DIVERSITY_OBJ_INDEX = 1
 
 # Parent selection: "map_elites" (default; uniform over occupied behavior
-# cells), "nsga2", or "lexicase" (epsilon-lexicase over per-behavior scores).
+# cells), "nsga2", "lexicase", "tournament", or "difficulty_tournament".
 # The MAP-Elites archive is updated after every evaluated generation and is
 # checkpointed independently from the current population.
 SELECTION_METHOD = os.getenv("JB_SELECTION", "map_elites").lower()

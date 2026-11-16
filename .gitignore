@@ -71,3 +71,11 @@ jailbreak_card_*.md
 
 .ci-venv/
 /run_records/
+
+# Repeatable difficulty-weighted tournament tooling (artifacts stay untracked).
+!analysis/
+!analysis/experiments/
+!analysis/experiments/__init__.py
+!analysis/experiments/difficulty*.py
+!analysis/experiments/DIFFICULTY_TOURNAMENT.md
+/experiments/difficulty_tournament/

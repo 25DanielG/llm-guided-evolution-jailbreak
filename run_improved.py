@@ -27,6 +27,9 @@ from src.map_elites import (
     rewrite_turn_depth_file,
 )
 from src import checkpointing
+from src.difficulty_selection import population_scores, tournament, validated_vector
+
+SELECTION_RNG = random.Random(int(os.getenv("DT_SEED", "0")))
 from src.cfg.constants import *
 from src.cfg import constants
 import glob
@@ -310,6 +313,8 @@ def submit_bash(file_path, **kwargs):
     create_bash_file(file_path, **kwargs)
     result = subprocess.run([RUN_COMMAND, file_path], capture_output=True, text=True)
     local_output = None
+    if os.getenv('DT_IDENTITY') and 'DT_INFRA_FAILURE' in (result.stdout + result.stderr):
+        raise RuntimeError('Mutation infrastructure failed; inspect generation log')
     if result.returncode == 0 and LOCAL:
         local_output = result.stdout.strip()
         print("\t‣ Output:", result.stdout.strip(), flush=True)
@@ -495,6 +500,8 @@ def submit_run(gene_id):
         local_output = None
         result = subprocess.run([RUN_COMMAND, file_path], capture_output=True, text=True)
         if LOCAL:
+            if os.getenv('DT_IDENTITY') and 'DT_INFRA_FAILURE' in (result.stdout + result.stderr):
+                raise RuntimeError('Evaluation infrastructure failed; inspect the generation log')
             local_output = result.stdout.strip() + '\n' + result.stderr.strip()
             print("\t‣ Output:", local_output, flush=True)
             job_id = None
@@ -1220,10 +1227,14 @@ def checkpoint_identity():
     keys = ('JB_TARGET_MODEL_PATH', 'JB_JUDGE_MODEL_PATH', 'JB_REPORTING_MODEL_PATH',
             'JB_RUN_TARGET_PROFILE', 'JB_RUN_JUDGE_PROFILE', 'JB_RUN_MUTATOR_PROFILE',
             'JB_CACHE_DIR', 'JB_JUDGE_PROMPT')
-    return {'run_id': RUN_ID, 'llm_model': globals().get('llm_model', DEFAULT_LLM_MODEL),
-            'selection': globals().get('_selection_method'), 'prompt_glob': PROMPT_GLOB,
-            'registry_sha256': checkpointing.digest(os.path.join(os.path.dirname(__file__), 'config/served_models.json')),
-            'environment': {key: os.getenv(key) for key in keys}}
+    identity = {'run_id': RUN_ID, 'llm_model': globals().get('llm_model', DEFAULT_LLM_MODEL),
+                'selection': globals().get('_selection_method'), 'prompt_glob': PROMPT_GLOB,
+                'registry_sha256': checkpointing.digest(os.path.join(os.path.dirname(__file__), 'config/served_models.json')),
+                'environment': {key: os.getenv(key) for key in keys}}
+    if os.getenv('DT_IDENTITY') or globals().get('_selection_method') in ('tournament', 'difficulty_tournament'):
+        identity.update(difficulty_experiment=os.getenv('DT_IDENTITY'), difficulty_seed=os.getenv('DT_SEED'),
+                        tournament_size=os.getenv('JB_TOURNAMENT_SIZE', '3'))
+    return identity
 
 
 def save_checkpoint(gen, folder_name="checkpoints", global_path=None, checkpoint_data=None):
@@ -1232,7 +1243,11 @@ def save_checkpoint(gen, folder_name="checkpoints", global_path=None, checkpoint
             raise ValueError('Strict checkpoints require a global directory')
         data = dict(checkpoint_data) if checkpoint_data is not None else {
             'population': population, 'hof': hof, 'map_elites_archive': MAP_ELITES_ARCHIVE}
-        data.update(python_random_state=random.getstate(), numpy_random_state=np.random.get_state())
+        data.update(python_random_state=random.getstate(), numpy_random_state=np.random.get_state(),
+                    selection_random_state=SELECTION_RNG.getstate())
+        if os.getenv('DT_WORK_ROOT'):
+            from src.difficulty_artifacts import snapshot
+            data['difficulty_artifacts'] = snapshot(os.environ['DT_WORK_ROOT'], folder_name, gen)
         result = checkpointing.commit(gen, folder_name, global_path, data,
             {'GLOBAL_DATA': GLOBAL_DATA, 'GLOBAL_DATA_HIST': GLOBAL_DATA_HIST,
              'GLOBAL_DATA_ANCESTRY': GLOBAL_DATA_ANCESTRY}, checkpoint_identity())
@@ -1298,12 +1313,28 @@ def load_checkpoint(folder_name="checkpoints", checkpoint_file=None, global_path
     if mode == 'new':
         if any(Path(folder_name).glob('checkpoint_gen_*')) or any(Path(global_path).glob('global_gen_*')):
             raise ValueError('New run already has checkpoints; choose required resume or a fresh RUN_ID')
+        if os.getenv('DT_INITIAL_ROOT'):
+            from analysis.experiments.difficulty_worker import restore_initial
+            state, globals_data = restore_initial(Path(os.environ['DT_INITIAL_ROOT']), Path.cwd(),
+                                                  os.environ['DT_CAMPAIGN_ID'], os.environ['DT_SEED'])
+            random.setstate(state['python_random_state'])
+            np.random.set_state(state['numpy_random_state'])
+            SELECTION_RNG.setstate(state['selection_random_state'])
+            return state, 1, globals_data
         return None, None, None
     if mode == 'required':
         state, next_gen, globals_data = checkpointing.restore(folder_name, global_path,
                                                             checkpoint_identity(), checkpoint_file)
+        if os.getenv('DT_WORK_ROOT'):
+            from src.difficulty_artifacts import restore
+            restore(os.environ['DT_WORK_ROOT'], state['difficulty_artifacts'])
+            for log in Path(os.environ['DT_SELECTION_DIR']).glob('gen_*.json'):
+                if int(log.stem.split('_')[1]) >= next_gen:
+                    log.unlink()
         random.setstate(state['python_random_state'])
         np.random.set_state(state['numpy_random_state'])
+        if 'selection_random_state' in state:
+            SELECTION_RNG.setstate(state['selection_random_state'])
         checkpointing.progress(next_gen - 1, Path(folder_name) / f'checkpoint_gen_{next_gen - 1}.pkl')
         return state, next_gen, globals_data
     if not os.path.exists(folder_name) or not os.path.exists(global_path):
@@ -1356,6 +1387,23 @@ def lexicase_select(pop, k):
     return _select(pop, k, key_fn=lambda ind: ind[0], case_scores=case_scores,
                    epsilon=globals().get("LEXICASE_EPSILON", "mad"))
 
+def tournament_select(pop, k):
+    expected = None
+    if os.getenv('DT_PANEL_JSON'):
+        expected = json.loads(Path(os.environ['DT_PANEL_JSON']).read_text())
+    vectors = {ind[0]: validated_vector(_gene_result_data(ind[0]), expected) for ind in pop}
+    stats = population_scores(vectors)
+    mode = 'weighted' if _selection_method == 'difficulty_tournament' else 'plain'
+    keys = [ind[0] for ind in pop]
+    chosen = tournament(keys, stats[mode], k, int(os.getenv('JB_TOURNAMENT_SIZE', '3')), SELECTION_RNG)
+    if os.getenv('DT_SELECTION_DIR'):
+        checkpointing.atomic_json(Path(os.environ['DT_SELECTION_DIR']) / f'gen_{CURRENT_GENERATION:03d}.json',
+            dict(generation=CURRENT_GENERATION, population=keys, vectors=vectors,
+                 selected=chosen, mode=mode, **stats))
+    by_key = {ind[0]: ind for ind in pop}
+    return [by_key[key] for key in chosen]
+
+
 def map_elites_select(pop, k):
     """Uniformly select parents from occupied MAP-Elites cells.
 
@@ -1407,6 +1455,8 @@ _SELECTORS = {
     "map_elites": map_elites_select,
     "nsga2": true_nsga2,
     "lexicase": lexicase_select,
+    "tournament": tournament_select,
+    "difficulty_tournament": tournament_select,
 }
 _selection_method = globals().get("SELECTION_METHOD", "map_elites")
 if _selection_method not in _SELECTORS:
@@ -1448,6 +1498,9 @@ if __name__ == "__main__":
     # Parse the arguments
     args = parser.parse_args()
     RUN_ID = args.run_id
+    if os.getenv("DT_SEED"):
+        random.seed(int(os.environ["DT_SEED"]))
+        np.random.seed(int(os.environ["DT_SEED"]))
     llm_model = args.llm_model
     os.environ['JB_RESUME_MODE'] = args.resume_mode
 
@@ -1490,6 +1543,8 @@ if __name__ == "__main__":
         update_map_elites_archive(population)
         if args.resume_mode == 'new':
             save_checkpoint(0, folder_name=args.checkpoints, global_path=args.global_path)
+    if population_data and args.resume_mode == 'new' and os.getenv('DT_INITIAL_ROOT'):
+        save_checkpoint(0, folder_name=args.checkpoints, global_path=args.global_path)
     write_map_elites_summary(MAP_ELITES_ARCHIVE, max(0, start_gen - 1))
     if os.getenv('JB_STOP_FILE') and os.path.exists(os.environ['JB_STOP_FILE']):
         print('Stop requested before next generation; retained committed checkpoint', flush=True)

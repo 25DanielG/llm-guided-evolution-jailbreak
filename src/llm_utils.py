@@ -546,6 +546,17 @@ def submit_mixtral_local(prompt, max_new_tokens=None, temperature=0.2, top_p=0.1
 
     server_url = f"http://{llm_hostname}:{PORT}/generate"
     
+    if os.getenv('DT_IDENTITY'):
+        for attempt in range(3):
+            try:
+                response = requests.post(server_url, headers=headers, json=payload,
+                                         timeout=float(os.getenv('JB_REQUEST_TIMEOUT', '180')))
+                response.raise_for_status()
+                output_txt = response.json()['generated_text']
+                return (output_txt, submit_mixtral_local) if return_gen else output_txt
+            except (requests.exceptions.RequestException, ValueError, KeyError) as exc:
+                if attempt == 2:
+                    raise RuntimeError('DT_INFRA_FAILURE: mutator failed after three attempts') from exc
     try:
         response = requests.post(server_url, headers=headers, json=payload)
         

@@ -3,6 +3,7 @@ with a thread pool.
 """
 
 import time
+import os
 import sys
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
@@ -10,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 import requests
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.chat_response import parse_chat_response
+from src.experiment_telemetry import record
 
 API_KEY = "EMPTY"
 
@@ -61,6 +63,11 @@ def chat(base_url, model, messages, max_tokens=512, temperature=0.0, top_p=None,
         payload.update(logprobs=True, top_logprobs=top_logprobs)
     if extra:
         payload.update(extra)
+    if 'DT_SEED' in os.environ:
+        from src.experiment_random import request_seed
+        payload.setdefault('seed', request_seed(payload))
+    if os.getenv('DT_STRICT_EVAL'):
+        retries = 0  # experiment evaluation owns the three-attempt budget
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {API_KEY}"}
     last_err = None
     for attempt in range(retries + 1):
@@ -71,6 +78,7 @@ def chat(base_url, model, messages, max_tokens=512, temperature=0.0, top_p=None,
                 data = resp.json()
                 parsed = parse_chat_response(data)
                 usage = parsed["usage"]
+                record(model, started, usage=usage)
                 return {"text": parsed["text"], "prompt_tokens": int(usage.get("prompt_tokens", 0)),
                         "usage": usage, "latency_seconds": time.monotonic() - started,
                         "logprobs": parsed["logprobs"], "finish_reason": parsed["finish_reason"],
@@ -78,6 +86,7 @@ def chat(base_url, model, messages, max_tokens=512, temperature=0.0, top_p=None,
             last_err = f"HTTP {resp.status_code}: {resp.text[:200]}"
         except requests.exceptions.RequestException as err:
             last_err = str(err)
+        record(model, started, error=last_err)
         if attempt < retries:
             time.sleep(2 * (attempt + 1))
     raise RuntimeError(f"vLLM request to {url} failed after {retries + 1} tries: {last_err}")
@@ -106,11 +115,16 @@ def chat_batch(base_url, model, messages_list, max_tokens=512, temperature=0.0,
 def completion(base_url, model, prompt, max_tokens=8, timeout=120):
     """Raw completion for classifiers with their own instruction template."""
     started = time.monotonic()
-    response = requests.post(f"{base_url}/completions",
-                             headers={"Authorization": f"Bearer {API_KEY}"},
-                             json={"model": model, "prompt": prompt, "max_tokens": max_tokens,
-                                   "temperature": 0}, timeout=timeout)
-    response.raise_for_status()
-    data = response.json()
-    return {"text": data["choices"][0]["text"], "usage": data.get("usage", {}),
-            "latency_seconds": time.monotonic() - started}
+    try:
+        response = requests.post(f"{base_url}/completions",
+                                 headers={"Authorization": f"Bearer {API_KEY}"},
+                                 json={"model": model, "prompt": prompt, "max_tokens": max_tokens,
+                                       "temperature": 0}, timeout=timeout)
+        response.raise_for_status()
+        data = response.json()
+        record(model, started, usage=data.get('usage', {}))
+        return {"text": data["choices"][0]["text"], "usage": data.get("usage", {}),
+                "latency_seconds": time.monotonic() - started}
+    except Exception as exc:
+        record(model, started, error=str(exc))
+        raise

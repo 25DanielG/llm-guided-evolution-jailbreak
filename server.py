@@ -66,6 +66,9 @@ class LLMModel:
     def _initialize(self):
         print("initializing", flush=True)
         self._validate_cuda_available()
+        if os.getenv("DT_SEED"):
+            torch.manual_seed(int(os.environ["DT_SEED"]))
+            torch.cuda.manual_seed_all(int(os.environ["DT_SEED"]))
         # TODO figure out how to better handle the initialization (i.e. mixtral dies because it doesn't have attention)
         # TODO find out why when this dies the code around it continues i.e. a model is returned to generate_text, but I never see the print out of "I created my instance"
         # Resolve HF cache directories: if MODEL_PATH is a HF cache dir
@@ -194,6 +197,12 @@ class LLMModel:
                     for (temperature, top_p), (greqs, gfutures) in groups.items():
                         prompts = [r["prompt"] for r in greqs]
                         max_new_tokens = max(r["max_new_tokens"] for r in greqs)
+                        if os.getenv('DT_SEED'):
+                            from src.experiment_random import request_seed
+                            # Content-derived batch seed survives service restarts.
+                            batch_seed = request_seed([prompts, temperature, top_p, max_new_tokens])
+                            torch.manual_seed(batch_seed)
+                            torch.cuda.manual_seed_all(batch_seed)
                         results = await asyncio.to_thread(
                             self.pipeline,
                             prompts,
@@ -288,6 +297,9 @@ async def generate_text(request: LLMRequest):
         print(f"Request received at {time.strftime('%H:%M:%S', time.localtime(start_time))}", flush=True)
         
         result = await model.generate(request_dict)
+        if os.getenv('DT_REQUEST_LOG'):
+            from src.experiment_telemetry import record
+            record('mutator', time.monotonic() - (time.time() - start_time), usage=result.get('usage'))
         
         print(f"Request completed in {time.time() - start_time:.2f}s", flush=True)
         return result

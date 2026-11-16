@@ -15,6 +15,8 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 from src.cfg.constants import *
+from src.experiment_random import seed_process
+seed_process(sys.argv)
 from src.map_elites import TURN_DEPTHS, classify_turn_depth, coerce_turn_depth
 from src.utils.print_utils import box_print
 
