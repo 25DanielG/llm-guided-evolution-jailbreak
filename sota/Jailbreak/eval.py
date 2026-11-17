@@ -1,7 +1,8 @@
 """Fitness evaluation for Jailbreaking. The titantic GE loop is not changed.
 Invoked as: uv run python eval.py --model prompt_<gene_id> --variant_dir <dir>
 Writes results to results/<gene_id>_results.csv with the three existing fitness
-values first, followed by easy/medium/hard diagnostic scores.
+values first (then the opt-in checklist score, objective 4 below), followed by
+easy/medium/hard diagnostic scores.
 
 Objectives are:
     1. mean_judge_score to maximize (continuous in-loop rubric score; never the
@@ -9,6 +10,8 @@ Objectives are:
     2. prompt diversity to maximize (filled in by run_improved.py across the
        generation; this script only writes a placeholder)
     3. avg_prompt_tokens to minimize, attack cost / stealth proxy
+    4. opt-in (JB_CHECKLIST_OBJECTIVE=1): mean checklist judge score to maximize
+       (judge.checklist_score; written as the 4th CSV column only when enabled)
 
 Reporting: responses that clear JB_VERIFY_THRESHOLD get three fresh,
 uncached target generations classified by the separate HarmBench model
@@ -326,6 +329,19 @@ def score(records, behavior_tiers=None):
     avg_tokens = (sum(tokens) / len(tokens)) if tokens else PENALTY_TOKENS
     return harm_rate, avg_tokens, details
 
+def checklist_mean(records):
+    """Opt-in 4th objective (JB_CHECKLIST_OBJECTIVE=1): mean judge.checklist_score over the responses the
+    target answered (target failures are left out, as in score()). Each verdict is stored on rec["checklist"]."""
+    with ThreadPoolExecutor(max_workers=max(1, jb_config.max_concurrency())) as pool:
+        verdicts = list(pool.map(
+            lambda r: None if r.get("error") else judge.checklist_score(r["behavior"], r["response"]), records))
+    scores = []
+    for rec, verdict in zip(records, verdicts):
+        rec["checklist"] = verdict
+        if verdict is not None:
+            scores.append(verdict["score"])
+    return sum(scores) / len(scores) if scores else 0.0
+
 def summarize_tier_scores(details):
     """Return mean judge score and sample count for each difficulty tier."""
     scores = {tier: [] for tier in TIERS}
@@ -345,22 +361,31 @@ def summarize_tier_scores(details):
     counts = {tier: len(values) for tier, values in scores.items()}
     return means, counts
 
-def write_results(gene_id, harm_rate, avg_tokens, diversity=0.0, tier_scores=None):
+def write_results(gene_id, harm_rate, avg_tokens, diversity=0.0, tier_scores=None, checklist=None):
     """CSV columns match FITNESS_WEIGHTS order: judge_score, diversity, tokens.
     diversity is a placeholder here; run_improved.py fills it across the
     generation (the per-gene eval has no view of the population). Tier scores
     are appended so the first three fitness columns remain backward compatible.
+    checklist (JB_CHECKLIST_OBJECTIVE=1 only) goes in as the 4th column, the
+    4th fitness value; without it the file is unchanged.
     """
     supplied_tier_scores = tier_scores or {}
     tier_scores = {tier: float(supplied_tier_scores.get(tier, 0.0)) for tier in TIERS}
     filename = os.path.abspath(f"{jb_config.gene_results_dir()}/{gene_id}_results.csv")
     os.makedirs(os.path.dirname(filename), exist_ok=True)
     with open(filename, "w") as f:
-        f.write("mean_judge_score,diversity,avg_prompt_tokens,easy_score,medium_score,hard_score\n")
-        f.write(
-            f"{harm_rate},{diversity},{avg_tokens},"
-            f"{tier_scores['easy']},{tier_scores['medium']},{tier_scores['hard']}\n"
-        )
+        if checklist is None:
+            f.write("mean_judge_score,diversity,avg_prompt_tokens,easy_score,medium_score,hard_score\n")
+            f.write(
+                f"{harm_rate},{diversity},{avg_tokens},"
+                f"{tier_scores['easy']},{tier_scores['medium']},{tier_scores['hard']}\n"
+            )
+        else:
+            f.write("mean_judge_score,diversity,avg_prompt_tokens,checklist_score,easy_score,medium_score,hard_score\n")
+            f.write(
+                f"{harm_rate},{diversity},{avg_tokens},{checklist},"
+                f"{tier_scores['easy']},{tier_scores['medium']},{tier_scores['hard']}\n"
+            )
     print(f"results have been written to {filename}", flush=True)
 
 def write_details(
@@ -371,6 +396,7 @@ def write_details(
     decoding=None,
     tier_scores=None,
     tier_counts=None,
+    checklist=None,
 ):
     """Sidecar per-behavior JSON. Read by run_improved (diversity), directed
     mutation, the individual-card exporter, and the post-run report."""
@@ -393,6 +419,8 @@ def write_details(
         "decoding": decoding or {},
         "behaviors": details,
     }
+    if checklist is not None:
+        payload["mean_checklist_score"] = checklist
     with open(filename, "w") as f:
         json.dump(payload, f, indent=2)
     print(f"details written to {filename}", flush=True)
@@ -454,6 +482,7 @@ if __name__ == "__main__":
 
     gene_id = extract_gene_id(args.model)
     print(f"Evaluating gene: {gene_id} (module: {args.model})", flush=True)
+    use_checklist = jb_config.checklist_objective()  # read first: a bad value fails before any model call
 
     module_file = os.path.join(variant_dir_abs, f"{args.model}.py")
     if os.path.exists(module_file):
@@ -485,6 +514,11 @@ if __name__ == "__main__":
     records = get_target_responses(strategy, behaviors, target_url, jb_config.target_model_name(), decoding=decoding)
     harm_rate, avg_tokens, details = score(records, behavior_tiers=behavior_tiers)
     tier_scores, tier_counts = summarize_tier_scores(details)
+    checklist = None
+    if use_checklist:
+        checklist = checklist_mean(records)
+        for detail, rec in zip(details, records):
+            detail["checklist"] = rec["checklist"]
 
     # Each verification is 3 fresh target generations + 3 HarmBench calls; run
     # the records that clear the threshold concurrently (order preserved).
@@ -506,6 +540,8 @@ if __name__ == "__main__":
             "target_usage": rec.get("usage", {}), "target_latency_seconds": rec.get("latency_seconds", 0),
             "target_cached": rec.get("target_cached", False), "in_loop": in_loop, "verification": verification,
         })
+        if checklist is not None:
+            report_rows[-1]["checklist"] = rec["checklist"]
     path = append_records(args.run_id, report_rows)
     export_elites(path)
     in_loop_rate = sum(r["in_loop"]["score"] >= jb_config.verification_threshold() for r in report_rows) / len(report_rows) if report_rows else 0.0
@@ -514,11 +550,15 @@ if __name__ == "__main__":
     parse_failures = (f" judge_parse_failures={sum(not r['in_loop']['parse_ok'] for r in report_rows)}"
                       if jb_config.judge_prompt() == "guide" else "")
     print(f"mean_judge_score={harm_rate:.4f} in_loop_success_rate={in_loop_rate:.4f} verified_success_rate={verified_rate:.4f} avg_prompt_tokens={avg_tokens:.1f}{parse_failures}", flush=True)
+    if checklist is not None:
+        # failed checklist calls score 0 silently, so surface them like guide parse failures
+        print(f"mean_checklist_score={checklist:.4f} checklist_parse_failures="
+              f"{sum(1 for r in records if r['checklist'] and not r['checklist']['parse_ok'])}", flush=True)
     n_err = sum(1 for d in details if str(d.get("error") or "").startswith("target_error"))
     n_bad = sum(1 for d in details if d.get("error") == "malformed_rubric")
     print(f"target_errors={n_err} malformed_rubric={n_bad} of {len(details)} behaviors", flush=True)
 
-    write_results(gene_id, harm_rate, avg_tokens, tier_scores=tier_scores)
+    write_results(gene_id, harm_rate, avg_tokens, tier_scores=tier_scores, checklist=checklist)
     write_details(
         gene_id,
         harm_rate,
@@ -527,6 +567,7 @@ if __name__ == "__main__":
         decoding=decoding,
         tier_scores=tier_scores,
         tier_counts=tier_counts,
+        checklist=checklist,
     )
     print('=' * 60)
     print('job done')

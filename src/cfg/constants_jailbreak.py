@@ -150,6 +150,13 @@ Evolution Constants/Params
 # binary harm), obj2 = prompt diversity (maximize, TF-IDF novelty vs the rest
 # of the generation), obj3 = avg prompt tokens / cost (minimize).
 FITNESS_WEIGHTS = (1.0, 1.0, -1.0)
+# obj4, opt-in (JB_CHECKLIST_OBJECTIVE=1) = mean checklist judge score (maximize),
+# the 4th column eval.py writes only when the same flag is on.
+CHECKLIST_OBJECTIVE = os.getenv("JB_CHECKLIST_OBJECTIVE", "0")
+if CHECKLIST_OBJECTIVE not in ("0", "1"):
+    raise ValueError(f"JB_CHECKLIST_OBJECTIVE must be '0' or '1', got {CHECKLIST_OBJECTIVE!r}")
+if CHECKLIST_OBJECTIVE == "1":
+    FITNESS_WEIGHTS += (1.0,)
 INVALID_FITNESS_MAX = tuple([float(x*np.inf*-1) for x in FITNESS_WEIGHTS])
 PLACEHOLDER_FITNESS = tuple([int(x*9999999999*-1) for x in FITNESS_WEIGHTS])
 NUM_EOT_ELITES = 10

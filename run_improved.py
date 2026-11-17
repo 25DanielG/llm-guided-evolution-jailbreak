@@ -578,6 +578,11 @@ def check4results(gene_id):
         results_path = _gene_result_path(gene_id, "csv")
         with open(results_path, 'r') as file:
             lines = file.readlines()
+        # With the checklist objective on, the 4th fitness value must be eval.py's checklist column;
+        # an eval job that did not get the flag writes easy_score there instead.
+        if globals().get('CHECKLIST_OBJECTIVE') == '1' and lines[0].strip().split(',')[3:4] != ['checklist_score']:
+            raise RuntimeError(f'{results_path} has no checklist_score column but JB_CHECKLIST_OBJECTIVE=1; '
+                               'the flag must reach every eval job')
         # Skip header line (first line) and parse data line (second line)
         results = lines[-1].strip() if len(lines) > 1 else lines[0].strip()
         results = results.split(',')
@@ -1216,14 +1221,27 @@ def remove_duplicates(population):
     return unique_individuals
 
 # --- Checkpoint Functions --- #
+def check_objective_count(population):
+    """Stop clearly when a checkpoint's individuals have another number of objectives than this run. Auto resume
+    skips the identity check, and DEAP unpickles each individual with its saved weights, so a flipped
+    JB_CHECKLIST_OBJECTIVE would otherwise fail later on DEAP's length assertion."""
+    if population and len(population[0].fitness.weights) != len(FITNESS_WEIGHTS):
+        raise ValueError(f'checkpoint has {len(population[0].fitness.weights)} objectives but this run has '
+                         f'{len(FITNESS_WEIGHTS)} (was JB_CHECKLIST_OBJECTIVE changed, or is it an older '
+                         'checkpoint?); use a new RUN_ID')
+
 def checkpoint_identity():
     keys = ('JB_TARGET_MODEL_PATH', 'JB_JUDGE_MODEL_PATH', 'JB_REPORTING_MODEL_PATH',
             'JB_RUN_TARGET_PROFILE', 'JB_RUN_JUDGE_PROFILE', 'JB_RUN_MUTATOR_PROFILE',
             'JB_CACHE_DIR', 'JB_JUDGE_PROMPT')
+    environment = {key: os.getenv(key) for key in keys}
+    if globals().get('CHECKLIST_OBJECTIVE') == '1':
+        # added only when on, so checkpoints written before this flag existed still resume
+        environment['JB_CHECKLIST_OBJECTIVE'] = '1'
     return {'run_id': RUN_ID, 'llm_model': globals().get('llm_model', DEFAULT_LLM_MODEL),
             'selection': globals().get('_selection_method'), 'prompt_glob': PROMPT_GLOB,
             'registry_sha256': checkpointing.digest(os.path.join(os.path.dirname(__file__), 'config/served_models.json')),
-            'environment': {key: os.getenv(key) for key in keys}}
+            'environment': environment}
 
 
 def save_checkpoint(gen, folder_name="checkpoints", global_path=None, checkpoint_data=None):
@@ -1469,6 +1487,7 @@ if __name__ == "__main__":
         GLOBAL_DATA_HIST = global_data["GLOBAL_DATA_HIST"]
         GLOBAL_DATA_ANCESTRY = global_data["GLOBAL_DATA_ANCESTRY"]
         population = population_data["population"]
+        check_objective_count(population)
         hof = population_data["hof"]
         MAP_ELITES_ARCHIVE = population_data.get("map_elites_archive", MapElitesArchive())
     else:
