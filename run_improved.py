@@ -1355,6 +1355,8 @@ def load_checkpoint(folder_name="checkpoints", checkpoint_file=None, global_path
 
     return population_data, start_gen, global_data
 
+from src.survival import nsga2_survival
+
 def true_nsga2(pop, k):
     pop = tools.selNSGA2(pop, len(pop)) # 10 diff
     k = k // 4 * 4
@@ -1400,6 +1402,57 @@ def initial_turn_depth_targets(n):
     random.shuffle(targets)
     return targets
 
+def tournament_select(pop, k):
+    """Control for lexicase: a tournament on the mean judge score alone (fitness objective 0).
+    Unlike true_nsga2 it ignores the diversity and prompt-length objectives when choosing parents."""
+    from src.tournament import tournament_select as _select
+    k = k // 4 * 4
+    return _select(pop, k, score_fn=lambda ind: ind.fitness.values[0],
+                   size=globals().get("TOURNAMENT_SIZE", 3))
+
+# --- Two-judge parent selection (70B guide judge + checklist judge). All four need JB_CHECKLIST_OBJECTIVE=1, which
+# makes eval.py write the checklist score as fitness objective 4 and per-behavior checklist verdicts in the sidecar.
+# Only parent choice differs between arms: elites (SPEA2) and survival (JB_SURVIVAL) act on the full objective vector.
+CHECKLIST_FITNESS_INDEX = 3
+
+creator.create("FitnessJudges", base.Fitness, weights=(1.0, 1.0))
+creator.create("JudgeProxy", list, fitness=creator.FitnessJudges)
+
+def lexicase_judges_select(pop, k):
+    """Epsilon-lexicase over behavior x judge cases ("<behavior>|judge", "<behavior>|checklist")."""
+    from src.lexicase import lexicase_select as _select
+    from src.multi_judge import two_judge_cases
+    k = k // 4 * 4
+    case_scores = {ind[0]: two_judge_cases(_gene_result_data(ind[0])) for ind in pop}
+    return _select(pop, k, key_fn=lambda ind: ind[0], case_scores=case_scores,
+                   epsilon=globals().get("LEXICASE_EPSILON", "mad"))
+
+def nsga2_judges_select(pop, k):
+    """NSGA-II crowded tournament on exactly two objectives: mean 70B judge score and mean checklist score.
+    No diversity or prompt-length objective takes part in choosing parents."""
+    proxies = []
+    for ind in pop:
+        proxy = creator.JudgeProxy([ind])
+        proxy.fitness.values = (ind.fitness.values[0], ind.fitness.values[CHECKLIST_FITNESS_INDEX])
+        proxies.append(proxy)
+    ranked = tools.selNSGA2(proxies, len(proxies))
+    k = k // 4 * 4
+    return [proxy[0] for proxy in tools.selTournamentDCD(k * ranked, k)]
+
+def conservative_select(pop, k):
+    """Tournament on the conservative score: per behavior min(70B judge, checklist), averaged over behaviors."""
+    from src.tournament import tournament_select as _select
+    from src.multi_judge import conservative_score
+    k = k // 4 * 4
+    scores = {ind[0]: conservative_score(_gene_result_data(ind[0])) for ind in pop}
+    return _select(pop, k, score_fn=lambda ind: scores[ind[0]], size=globals().get("TOURNAMENT_SIZE", 3))
+
+def tournament_checklist_select(pop, k):
+    """Same size-3 tournament as `tournament`, but on the mean checklist score alone."""
+    from src.tournament import tournament_select as _select
+    k = k // 4 * 4
+    return _select(pop, k, score_fn=lambda ind: ind.fitness.values[CHECKLIST_FITNESS_INDEX],
+                   size=globals().get("TOURNAMENT_SIZE", 3))
 
 def create_population(n, llm_model):
     return [
@@ -1425,11 +1478,23 @@ _SELECTORS = {
     "map_elites": map_elites_select,
     "nsga2": true_nsga2,
     "lexicase": lexicase_select,
+    "tournament": tournament_select,
+    "lexicase_judges": lexicase_judges_select,
+    "nsga2_judges": nsga2_judges_select,
+    "conservative": conservative_select,
+    "tournament_checklist": tournament_checklist_select,
 }
+_CHECKLIST_SELECTORS = ("lexicase_judges", "nsga2_judges", "conservative", "tournament_checklist")
 _selection_method = globals().get("SELECTION_METHOD", "map_elites")
+if _selection_method in _CHECKLIST_SELECTORS and globals().get("CHECKLIST_OBJECTIVE") != "1":
+    raise ValueError(f"JB_SELECTION={_selection_method} needs JB_CHECKLIST_OBJECTIVE=1 (the checklist score is its second judge)")
 if _selection_method not in _SELECTORS:
     raise ValueError(f"Unknown SELECTION_METHOD {_selection_method!r}; expected one of {list(_SELECTORS)}")
 toolbox.register("select", _SELECTORS[_selection_method])
+_survival_method = globals().get("SURVIVAL_METHOD", "generational")
+if _survival_method not in ("generational", "nsga2"):
+    raise ValueError(f"Unknown SURVIVAL_METHOD {_survival_method!r}; expected 'generational' or 'nsga2'")
+print(f"Parent selection: {_selection_method}; survival: {_survival_method}")
 
 # TODO: start using percent diff of train acc vs val test acc as an over fitt metric 
 
@@ -1633,6 +1698,17 @@ if __name__ == "__main__":
             subprocess.run(["uv", "run", "python", os.path.join(SOTA_ROOT, "audit.py"),
                             "--run-id", RUN_ID, "--generation", str(gen)], check=True)
         GLOBAL_DATA_HIST.update(GLOBAL_DATA.copy())
+        if _survival_method == "nsga2":
+            # (mu + lambda): old population and new offspring compete on the
+            # objectives; lexicase only chose the parents above.
+            _invalid = {tuple(INVALID_FITNESS_MAX), tuple(PLACEHOLDER_FITNESS)}
+            offspring = nsga2_survival(
+                population, offspring, population_size,
+                key_fn=lambda ind: ind[0],
+                is_valid=lambda ind: ind.fitness.valid and tuple(ind.fitness.values) not in _invalid,
+                select_fn=tools.selNSGA2,
+                refresh_fn=apply_diversity_objective)
+            print(f"NSGA-II survival kept {len(offspring)} genes")
         # Replace the old population with the offspring
         population[:] = offspring
         # Gather all the fitnesses in one list and print the stats

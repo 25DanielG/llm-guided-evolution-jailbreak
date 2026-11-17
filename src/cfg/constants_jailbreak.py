@@ -182,7 +182,11 @@ TRAIT_VALIDATION = "jailbreak_tags"
 DIVERSITY_OBJ_INDEX = 1
 
 # Parent selection: "map_elites" (default; uniform over occupied behavior
-# cells), "nsga2", or "lexicase" (epsilon-lexicase over per-behavior scores).
+# cells), "nsga2", "lexicase" (epsilon-lexicase over per-behavior scores), or
+# "tournament" (size-TOURNAMENT_SIZE tournament on the mean judge score alone), or one of four two-judge
+# selectors (need JB_CHECKLIST_OBJECTIVE=1): "lexicase_judges" (lexicase over behavior x judge cases),
+# "nsga2_judges" (NSGA-II on the 70B and checklist means only), "conservative" (tournament on the per-behavior
+# min of the two judges), "tournament_checklist" (tournament on the checklist mean).
 # The MAP-Elites archive is updated after every evaluated generation and is
 # checkpointed independently from the current population.
 SELECTION_METHOD = os.getenv("JB_SELECTION", "map_elites").lower()
@@ -199,6 +203,8 @@ STRUCTURAL_TURN_DEPTH_MUTATION = os.getenv(
 ).lower() in ("true", "1", "yes")
 # "mad" = per-case median absolute deviation, or a float applied to every case.
 LEXICASE_EPSILON = os.getenv("JB_LEXICASE_EPSILON", "mad")
+SURVIVAL_METHOD = os.getenv("JB_SURVIVAL", "generational").lower()
+TOURNAMENT_SIZE = int(os.getenv("JB_TOURNAMENT_SIZE", "3"))
 """
 Misc. Non-sense
 """
