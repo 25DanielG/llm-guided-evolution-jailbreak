@@ -58,6 +58,13 @@ def judge_prompt():
         raise ValueError(f"JB_JUDGE_PROMPT must be 'rubric' or 'guide', got {mode!r}")
     return mode
 
+def checklist_objective():
+    """Opt-in 4th fitness objective (JB_CHECKLIST_OBJECTIVE=1): mean checklist judge score. Off ("0") by default."""
+    value = os.getenv("JB_CHECKLIST_OBJECTIVE", "0")
+    if value not in ("0", "1"):
+        raise ValueError(f"JB_CHECKLIST_OBJECTIVE must be '0' or '1', got {value!r}")
+    return value == "1"
+
 def reporting_model_name():
     return os.getenv("JB_REPORTING_SERVED_NAME", "cais/HarmBench-Llama-2-13b-cls")
 

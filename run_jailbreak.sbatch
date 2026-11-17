@@ -42,6 +42,7 @@ JUDGE_MODEL="${JB_RUN_JUDGE_MODEL:-$LLAMA_8B}"
 JUDGE_TP="${JB_RUN_JUDGE_TP:-1}"
 JUDGE_MAX_LEN="${JB_RUN_JUDGE_MAX_LEN:-}"
 JUDGE_PROMPT="${JB_JUDGE_PROMPT-rubric}"  # unset -> rubric, same as jb_config.judge_prompt()
+CHECKLIST_OBJECTIVE="${JB_CHECKLIST_OBJECTIVE-0}"  # unset -> 0, same as jb_config.checklist_objective()
 MUTATOR_MODEL="${JB_RUN_MUTATOR_MODEL:-$LLAMA_8B}"
 REPORTING_MODEL="$HOME/scratch/llm_storage/HarmBench-Llama-2-13b-cls"
 # Opt-in registry profiles. Legacy path overrides retain their original behavior.
@@ -61,6 +62,10 @@ if [[ -n "$JUDGE_PROFILE" ]]; then
     export JB_JUDGE_PROFILE="$JUDGE_PROFILE"
     if [[ "$JUDGE_PROMPT" == guide && "$JUDGE_PROFILE" != llama-3.3-70b ]]; then
         echo "ERROR: guide judge is validated only with llama-3.3-70b; use rubric for new models" >&2
+        exit 1
+    fi
+    if [[ "$CHECKLIST_OBJECTIVE" == 1 && "$JUDGE_PROFILE" != llama-3.3-70b ]]; then
+        echo "ERROR: the checklist objective is validated only with llama-3.3-70b" >&2
         exit 1
     fi
 fi
@@ -135,6 +140,16 @@ esac
 if [ "$JUDGE_PROMPT" = guide ] && [ "$JUDGE_MODEL" = "$LLAMA_8B" ]; then
     echo "WARNING: JB_JUDGE_PROMPT=guide on the default 8B judge; it was validated on the 70B (set JB_RUN_JUDGE_MODEL)" >&2
 fi
+case "$CHECKLIST_OBJECTIVE" in
+    0|1) ;;
+    *) echo "ERROR: JB_CHECKLIST_OBJECTIVE must be 0 or 1, got: '$CHECKLIST_OBJECTIVE'" >&2; exit 1 ;;
+esac
+if [ "$CHECKLIST_OBJECTIVE" = 1 ] && [ "$JUDGE_MODEL" = "$LLAMA_8B" ]; then
+    echo "WARNING: JB_CHECKLIST_OBJECTIVE=1 on the default 8B judge; the checklist was validated on the 70B (set JB_RUN_JUDGE_MODEL)" >&2
+fi
+if [ "$CHECKLIST_OBJECTIVE" = 1 ] && [ "$(printf '%s' "$JB_SELECTION" | tr '[:upper:]' '[:lower:]')" != nsga2 ]; then
+    echo "WARNING: JB_CHECKLIST_OBJECTIVE=1 only steers parent selection with JB_SELECTION=nsga2 (got $JB_SELECTION)" >&2
+fi
 # Rubric verdict cache keys carry no model identity (served name is always "judge"), so a
 # non-default rubric judge gets its own cache dir instead of reusing the 8B's verdicts.
 if [ "$JUDGE_PROMPT" = rubric ] && [ "$JUDGE_MODEL" != "$LLAMA_8B" ]; then
@@ -154,6 +169,9 @@ REPORTING_DEV="${GPU_IDS[TARGET_TP + JUDGE_TP]}"
 MUTATOR_DEV=$(IFS=','; echo "${GPU_IDS[*]:TARGET_TP+JUDGE_TP+1:MUTATOR_TP}")
 echo "Slurm gave GPUs: $CUDA_VISIBLE_DEVICES -> target=$TARGET_DEV judge=$JUDGE_DEV reporting=$REPORTING_DEV mutator=$MUTATOR_DEV"
 echo "Judge: $JUDGE_MODEL (tp=$JUDGE_TP, prompt=$JUDGE_PROMPT); mutator: $MUTATOR_MODEL"
+if [ "$CHECKLIST_OBJECTIVE" = 1 ]; then
+    echo "Checklist objective: on (4th fitness value, 4 extra judge calls per response)"
+fi
 JUDGE_EXTRA_ARGS=""
 # Multi-GPU vLLM JIT-builds FlashInfer all-reduce kernels with 'ninja' (not on PATH here): use vLLM's own
 # all-reduce, and eager mode so the compile-time all-reduce fusion pass doesn't build one either.

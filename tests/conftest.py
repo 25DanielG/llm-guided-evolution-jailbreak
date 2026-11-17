@@ -18,6 +18,9 @@ import httpx
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+# Constants read this at import (4 objectives instead of 3), before any fixture runs; a value exported for a
+# run must not reshape fitness in the unit tests. Tests that need it set it themselves.
+os.environ.pop("JB_CHECKLIST_OBJECTIVE", None)
 HOSTNAME_FILE = ROOT / "hostname.log"
 PORT = int(os.getenv("LLMGE_PORT", "8137"))
 READY_TIMEOUT = int(os.getenv("LLM_SERVER_READY_TIMEOUT", "3600"))

@@ -102,6 +102,12 @@ def main():
           f"(informational only)\n    behavior: {harmful[:70]}...")
     ok = ok and _exchange_is_valid(out2, v2)
 
+    # 2b. Opt-in checklist objective: its four judge requests must parse too.
+    if jb_config.checklist_objective():
+        c = judge.checklist_score(benign, out["text"])
+        print(f"[2b] checklist (benign) -> score={c['score']} parse_ok={c['parse_ok']} error={c['error']}")
+        ok = ok and _exchange_is_valid(out, c)
+
     # 3. cache hit on re-send of (1)
     t0 = time.time()
     key = cache.response_key(target_name, [{"role": "user", "content": benign}],
