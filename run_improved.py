@@ -1457,6 +1457,17 @@ def conservative_select(pop, k):
     scores = {ind[0]: conservative_score(_gene_result_data(ind[0])) for ind in pop}
     return _select(pop, k, score_fn=lambda ind: scores[ind[0]], size=globals().get("TOURNAMENT_SIZE", 3))
 
+def zscore_blend_select(pop, k):
+    """Size-3 tournament on the equal-weight blend of the two judges, each z-scored across the current population
+    (mean 70B score and mean checklist score per gene)."""
+    from src.tournament import tournament_select as _select
+    from src.multi_judge import zscore_blend
+    k = k // 4 * 4
+    blend = dict(zip((ind[0] for ind in pop),
+                     zscore_blend([ind.fitness.values[0] for ind in pop],
+                                  [ind.fitness.values[CHECKLIST_FITNESS_INDEX] for ind in pop])))
+    return _select(pop, k, score_fn=lambda ind: blend[ind[0]], size=globals().get("TOURNAMENT_SIZE", 3))
+
 def tournament_checklist_select(pop, k):
     """Same size-3 tournament as `tournament`, but on the mean checklist score alone."""
     from src.tournament import tournament_select as _select
@@ -1492,9 +1503,10 @@ _SELECTORS = {
     "lexicase_judges": lexicase_judges_select,
     "nsga2_judges": nsga2_judges_select,
     "conservative": conservative_select,
+    "zscore_blend": zscore_blend_select,
     "tournament_checklist": tournament_checklist_select,
 }
-_CHECKLIST_SELECTORS = ("lexicase_judges", "nsga2_judges", "conservative", "tournament_checklist")
+_CHECKLIST_SELECTORS = ("lexicase_judges", "nsga2_judges", "conservative", "zscore_blend", "tournament_checklist")
 _selection_method = globals().get("SELECTION_METHOD", "map_elites")
 if _selection_method in _CHECKLIST_SELECTORS and globals().get("CHECKLIST_OBJECTIVE") != "1":
     raise ValueError(f"JB_SELECTION={_selection_method} needs JB_CHECKLIST_OBJECTIVE=1 (the checklist score is its second judge)")

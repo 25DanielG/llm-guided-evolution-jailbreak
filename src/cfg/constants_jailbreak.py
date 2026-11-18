@@ -184,7 +184,7 @@ DIVERSITY_OBJ_INDEX = 1
 # Parent selection: "map_elites" (default; uniform over occupied behavior
 # cells), "nsga2", "lexicase" (epsilon-lexicase over per-behavior scores), or
 # "tournament" (size-TOURNAMENT_SIZE tournament on the mean judge score alone), or one of four two-judge
-# selectors (need JB_CHECKLIST_OBJECTIVE=1): "lexicase_judges" (lexicase over behavior x judge cases),
+# selectors plus "zscore_blend" (tournament on the equal-weight z-score blend of the two judges; need JB_CHECKLIST_OBJECTIVE=1): "lexicase_judges" (lexicase over behavior x judge cases),
 # "nsga2_judges" (NSGA-II on the 70B and checklist means only), "conservative" (tournament on the per-behavior
 # min of the two judges), "tournament_checklist" (tournament on the checklist mean).
 # The MAP-Elites archive is updated after every evaluated generation and is

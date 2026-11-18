@@ -44,3 +44,19 @@ def judge_agreement(data, threshold=0.5):
         c = _checklist_score(e) >= threshold
         counts[0 if (j and c) else 1 if j else 2 if c else 3] += 1
     return tuple(n / len(entries) for n in counts)
+
+
+def zscores(values):
+    """Population z-scores; all zeros when the values do not vary (nothing to rank on)."""
+    values = [float(v) for v in values]
+    if not values:
+        return []
+    mean = sum(values) / len(values)
+    sd = (sum((v - mean) ** 2 for v in values) / len(values)) ** 0.5
+    return [0.0 if sd < 1e-12 else (v - mean) / sd for v in values]
+
+
+def zscore_blend(judge_means, checklist_means):
+    """Equal-weight blend of the two judges after standardizing each across the population (the checklist judge is
+    much stricter and spreads less than the 70B judge, so a raw average is dominated by the 70B judge)."""
+    return [(a + b) / 2 for a, b in zip(zscores(judge_means), zscores(checklist_means))]
