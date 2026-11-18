@@ -1427,14 +1427,24 @@ def lexicase_judges_select(pop, k):
     return _select(pop, k, key_fn=lambda ind: ind[0], case_scores=case_scores,
                    epsilon=globals().get("LEXICASE_EPSILON", "mad"))
 
-def nsga2_judges_select(pop, k):
-    """NSGA-II crowded tournament on exactly two objectives: mean 70B judge score and mean checklist score.
-    No diversity or prompt-length objective takes part in choosing parents."""
+def _two_judge_proxies(pop):
+    """One 2-objective (mean 70B judge score, mean checklist score) stand-in per individual; proxy[0] is the individual."""
     proxies = []
     for ind in pop:
         proxy = creator.JudgeProxy([ind])
         proxy.fitness.values = (ind.fitness.values[0], ind.fitness.values[CHECKLIST_FITNESS_INDEX])
         proxies.append(proxy)
+    return proxies
+
+def nsga2_judges_survival_select(pool, k):
+    """(mu + lambda) survival for JB_SURVIVAL=nsga2_judges: NSGA-II over exactly the two judge objectives, keep k.
+    No diversity or prompt-length objective takes part."""
+    return [proxy[0] for proxy in tools.selNSGA2(_two_judge_proxies(pool), k)]
+
+def nsga2_judges_select(pop, k):
+    """NSGA-II crowded tournament on exactly two objectives: mean 70B judge score and mean checklist score.
+    No diversity or prompt-length objective takes part in choosing parents."""
+    proxies = _two_judge_proxies(pop)
     ranked = tools.selNSGA2(proxies, len(proxies))
     k = k // 4 * 4
     return [proxy[0] for proxy in tools.selTournamentDCD(k * ranked, k)]
@@ -1492,8 +1502,10 @@ if _selection_method not in _SELECTORS:
     raise ValueError(f"Unknown SELECTION_METHOD {_selection_method!r}; expected one of {list(_SELECTORS)}")
 toolbox.register("select", _SELECTORS[_selection_method])
 _survival_method = globals().get("SURVIVAL_METHOD", "generational")
-if _survival_method not in ("generational", "nsga2"):
-    raise ValueError(f"Unknown SURVIVAL_METHOD {_survival_method!r}; expected 'generational' or 'nsga2'")
+if _survival_method not in ("generational", "nsga2", "nsga2_judges"):
+    raise ValueError(f"Unknown SURVIVAL_METHOD {_survival_method!r}; expected 'generational', 'nsga2' or 'nsga2_judges'")
+if _survival_method == "nsga2_judges" and globals().get("CHECKLIST_OBJECTIVE") != "1":
+    raise ValueError("JB_SURVIVAL=nsga2_judges needs JB_CHECKLIST_OBJECTIVE=1")
 print(f"Parent selection: {_selection_method}; survival: {_survival_method}")
 
 # TODO: start using percent diff of train acc vs val test acc as an over fitt metric 
@@ -1698,17 +1710,18 @@ if __name__ == "__main__":
             subprocess.run(["uv", "run", "python", os.path.join(SOTA_ROOT, "audit.py"),
                             "--run-id", RUN_ID, "--generation", str(gen)], check=True)
         GLOBAL_DATA_HIST.update(GLOBAL_DATA.copy())
-        if _survival_method == "nsga2":
+        if _survival_method in ("nsga2", "nsga2_judges"):
             # (mu + lambda): old population and new offspring compete on the
-            # objectives; lexicase only chose the parents above.
+            # objectives; the parent selector only chose the parents above.
+            # nsga2_judges ranks on the two judge scores alone (no text-novelty objective to refresh).
             _invalid = {tuple(INVALID_FITNESS_MAX), tuple(PLACEHOLDER_FITNESS)}
             offspring = nsga2_survival(
                 population, offspring, population_size,
                 key_fn=lambda ind: ind[0],
                 is_valid=lambda ind: ind.fitness.valid and tuple(ind.fitness.values) not in _invalid,
-                select_fn=tools.selNSGA2,
-                refresh_fn=apply_diversity_objective)
-            print(f"NSGA-II survival kept {len(offspring)} genes")
+                select_fn=nsga2_judges_survival_select if _survival_method == "nsga2_judges" else tools.selNSGA2,
+                refresh_fn=None if _survival_method == "nsga2_judges" else apply_diversity_objective)
+            print(f"NSGA-II survival ({_survival_method}) kept {len(offspring)} genes")
         # Replace the old population with the offspring
         population[:] = offspring
         # Gather all the fitnesses in one list and print the stats

@@ -172,6 +172,14 @@ echo "Judge: $JUDGE_MODEL (tp=$JUDGE_TP, prompt=$JUDGE_PROMPT); mutator: $MUTATO
 if [ "$CHECKLIST_OBJECTIVE" = 1 ]; then
     echo "Checklist objective: on (4th fitness value, 4 extra judge calls per response)"
 fi
+# The mutator runs on the repo's own torch, not vLLM's. On Blackwell (ice-bw-gpu) that torch has no
+# kernels ("CUDA error: no kernel image is available"), every LLM mutation fails, and the run silently
+# copies parents (jb_strat_hybrid1 gens 11-16, jb_strat_hybrid3 gens 0-8). Fail fast instead.
+if ! env CUDA_VISIBLE_DEVICES="$MUTATOR_DEV" uv run python -c \
+    "import torch; assert (torch.ones(8, device='cuda') * 2).sum().item() == 16" >/dev/null 2>&1; then
+    echo "ERROR: mutator torch cannot run a CUDA kernel on this node's GPUs ($(hostname)); resubmit with -C \"A100-80GB|H100|H200\"" >&2
+    exit 1
+fi
 JUDGE_EXTRA_ARGS=""
 # Multi-GPU vLLM JIT-builds FlashInfer all-reduce kernels with 'ninja' (not on PATH here): use vLLM's own
 # all-reduce, and eager mode so the compile-time all-reduce fusion pass doesn't build one either.
