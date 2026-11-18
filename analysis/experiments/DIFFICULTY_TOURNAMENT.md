@@ -168,3 +168,46 @@ strong statistical evidence. Search-panel performance is not unseen-target trans
 For a bounded live smoke test, prepare a **separate** campaign with `--seeds 42
 --population 8 --final-generation 1 --n-behaviors 6`. Keep its output separate from
 production. Ordinary tests use mocked inference and never allocate GPUs.
+
+## Additional seeds and automatic continuations
+
+The 10-seed study combines `v3` (42–44) with `v3-additional-seeds`
+(45–51), each with both selection methods and 16 generations. Existing results
+and manifests remain unchanged. Create a cohort with identical frozen source,
+model metadata, and panel using:
+
+```bash
+.venv/bin/python scripts/extend_difficulty_campaign.py \
+  --source "$PWD/experiments/difficulty_tournament/v3" \
+  --campaign "$PWD/experiments/difficulty_tournament/v3-additional-seeds" \
+  --seeds 45 46 47 48 49 50 51
+sbatch --array=0-6 run_difficulty_chain.sbatch initial \
+  "$PWD/experiments/difficulty_tournament/v3-additional-seeds"
+```
+
+Submit once: every successful initialization submits its two experiment tasks.
+Each allocation retains the five-H200, three-hour resource request. Exit 75
+submits an `afterany` continuation for the same stage/index, loading its committed
+checkpoint. There is no fixed limit on checkpoint continuations. Completion
+markers prevent finished runs from executing again. `chain.json` inside each
+stage records attempt exit codes, continuation IDs, and initialization's child
+job IDs. Logs are `difficulty-chain-JOB_INDEX.out` plus the usual attempt logs.
+The chain excludes `atl1-1-03-014-16-0`, where all three observed CUDA startup
+failures occurred. Other execution errors stop the chain for investigation;
+Slurm submission failures and hard kills before checkpoint handling also need
+manual recovery. This is not an automatic code-repair service.
+
+To add coverage behind already submitted original-style jobs, submit only the
+unfinished indices, depending on that existing job array:
+
+```bash
+sbatch --array=2-5 --dependency=afterany:EXISTING_ARRAY \
+  run_difficulty_chain.sbatch run "$PWD/experiments/difficulty_tournament/v3"
+```
+
+The wrapper skips already completed runs and resumes other runs from checkpoints.
+Do not independently submit duplicate chains for the same index. Initial work
+with no checkpoint requires investigation and preservation before a clean retry.
+Summarize each cohort separately using the existing `summarize` command; combine
+per-seed paired differences across the two cohorts for the ten-seed analysis,
+not the means of the unequal-size cohorts. `cohort.json` records their linkage.
