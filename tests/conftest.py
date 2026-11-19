@@ -255,10 +255,14 @@ def titanic_eval(tmp_path):
 def mock_codegen(monkeypatch):
     """Mock only inference; keep real selection, extraction, validation and assembly."""
     from unittest.mock import Mock
+    # src/ and the repo root are both on sys.path, so `llm_utils` (used by llm_crossover) and
+    # `src.llm_utils` (used by llm_mutation) are separate module objects; mock the boundary in both.
     import llm_utils
+    import src.llm_utils
     def configure(code):
         generator = Mock(return_value=f"```python\n{code}\n```" if code is not None else None)
-        monkeypatch.setattr(llm_utils, "get_llm_code_generator", lambda model: (generator, None))
+        for module in (llm_utils, src.llm_utils):
+            monkeypatch.setattr(module, "get_llm_code_generator", lambda model: (generator, None))
         return generator
     return configure
 
