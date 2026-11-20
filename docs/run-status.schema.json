@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "VIP overnight run status v1",
+  "type": "object",
+  "required": ["schema_version", "run_id", "job_id", "state", "job_state", "latest_completed_generation", "checkpoint", "last_progress_at", "last_activity_at", "heartbeat_at", "exception", "returncode", "exit_reason", "console_log"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "run_id": {"type": "string"},
+    "job_id": {"type": "string"},
+    "state": {"enum": ["RUNNING", "STOPPING", "PAUSED", "COMPLETED", "FAILED"]},
+    "job_state": {"type": "string"},
+    "latest_completed_generation": {"type": ["integer", "null"], "minimum": 0},
+    "checkpoint": {"type": ["string", "null"]},
+    "last_progress_at": {"type": "string", "format": "date-time"},
+    "last_activity_at": {"type": "string", "format": "date-time"},
+    "heartbeat_at": {"type": "string", "format": "date-time"},
+    "exception": {"type": ["string", "null"]},
+    "returncode": {"type": ["integer", "null"]},
+    "exit_reason": {"type": ["string", "null"]},
+    "console_log": {"type": "string"}
+  },
+  "additionalProperties": true
+}

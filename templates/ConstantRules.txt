@@ -1,0 +1,9 @@
+1. Retain original class names.
+2. Format the code in Markdown.
+3. Exclude setup/demonstration code.
+4. Retain original tensor input/output sizes.
+5. Provide a code example of your alterations.
+6. Provide full code.
+7. Must function with default settings.
+
+Let us think through this step by step:

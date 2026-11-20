@@ -1,0 +1,140 @@
+{
+  "collected_at": "2026-11-11T02:33:24.821522+00:00",
+  "cuda_visible_devices": null,
+  "dns": {
+    "huggingface.co": {
+      "error": "[Errno -2] Name or service not known"
+    },
+    "pypi.org": {
+      "error": "[Errno -2] Name or service not known"
+    },
+    "sched-ice-slurmctl": {
+      "error": "[Errno -2] Name or service not known"
+    },
+    "sched-ice-slurmdb": {
+      "error": "[Errno -2] Name or service not known"
+    }
+  },
+  "gpu_probe": {
+    "command": [
+      "nvidia-smi"
+    ],
+    "error": "[Errno 2] No such file or directory: 'nvidia-smi'",
+    "returncode": null
+  },
+  "host": "login-ice-gnr-2.pace.gatech.edu",
+  "live_scheduler_verified": false,
+  "packages": {
+    "mistral_common": null,
+    "openai-harmony": null,
+    "torch": "2.6.0",
+    "transformers": "4.56.2",
+    "vllm": null
+  },
+  "python": "3.12.15 (main, Oct 14 2026, 01:05:27) [Clang 23.1.3 ]",
+  "python_executable": "/storage/ice1/8/3/pablo3/llmge-redsea/.venv/bin/python",
+  "queries": [
+    {
+      "command": [
+        "scontrol",
+        "ping"
+      ],
+      "returncode": 1,
+      "stderr": "scontrol: error: slurm_get_port: Address family '0' not supported\nscontrol: error: Error connecting, bad data: family = 0, port = 0\nscontrol: error: slurm_get_port: Address family '0' not supported\nscontrol: error: Error connecting, bad data: family = 0, port = 0\n",
+      "stdout": "Slurmctld(primary) at sched-ice-slurmctl is DOWN\nSlurmctld(backup) at sched-ice-slurmdb is DOWN\n"
+    },
+    {
+      "command": [
+        "squeue",
+        "-h",
+        "-u",
+        "pablo3",
+        "-o",
+        "%i|%T|%b|%M|%l|%N"
+      ],
+      "error": "Command '['squeue', '-h', '-u', 'pablo3', '-o', '%i|%T|%b|%M|%l|%N']' timed out after 15 seconds",
+      "returncode": null
+    },
+    {
+      "command": [
+        "sinfo",
+        "-N",
+        "-h",
+        "-o",
+        "%N|%P|%G|%f|%t"
+      ],
+      "returncode": 1,
+      "stderr": "slurm_load_partitions: Unable to contact slurm controller (connect failure)\n",
+      "stdout": ""
+    },
+    {
+      "command": [
+        "scontrol",
+        "show",
+        "partition"
+      ],
+      "returncode": 1,
+      "stderr": "slurm_load_partitions error: Unable to contact slurm controller (connect failure)\n",
+      "stdout": ""
+    },
+    {
+      "command": [
+        "sacctmgr",
+        "-n",
+        "-P",
+        "show",
+        "assoc",
+        "user=pablo3",
+        "format=Cluster,Account,Partition,QOS"
+      ],
+      "returncode": 1,
+      "stderr": "sacctmgr: error: slurm_get_port: Address family '0' not supported\nsacctmgr: error: Error connecting, bad data: family = 0, port = 0\nsacctmgr: error: _open_persist_conn: failed to open persistent connection to host:sched-ice-slurmdb:6819: Resource temporarily unavailable\nsacctmgr: error: Sending PersistInit msg: Resource temporarily unavailable\n",
+      "stdout": ""
+    },
+    {
+      "command": [
+        "sacctmgr",
+        "-n",
+        "-P",
+        "show",
+        "qos",
+        "format=Name,MaxWall"
+      ],
+      "returncode": 1,
+      "stderr": "sacctmgr: error: slurm_get_port: Address family '0' not supported\nsacctmgr: error: Error connecting, bad data: family = 0, port = 0\nsacctmgr: error: _open_persist_conn: failed to open persistent connection to host:sched-ice-slurmdb:6819: Resource temporarily unavailable\nsacctmgr: error: Sending PersistInit msg: Resource temporarily unavailable\n",
+      "stdout": ""
+    },
+    {
+      "command": [
+        "lfs",
+        "quota",
+        "-h",
+        "-u",
+        "pablo3",
+        "/storage/ice1/8/3/pablo3"
+      ],
+      "returncode": 0,
+      "stderr": "",
+      "stdout": "Disk quotas for usr pablo3 (uid 3437683):\n      Filesystem    used   bquota  blimit  bgrace   files   iquota  ilimit  igrace\n/storage/ice1/8/3/pablo3  57.51G     300G    300G       -  189665  1000000 1000000       -\n"
+    },
+    {
+      "command": [
+        "bash",
+        "-lc",
+        "module -t avail cuda"
+      ],
+      "returncode": 0,
+      "stderr": "/usr/local/pace-apps/spack/modules/lmod/linux-rhel9-x86_64/mvapich2/2.3.7-1-tcqqxwz/gcc/12.3.0:\nlammps/20220623.4-mva2-cuda-openmp-cc70\nlammps/20240829-mva2-cuda-openmp-cc70\n/usr/local/pace-apps/spack/modules/lmod/linux-rhel9-x86_64/mvapich2/2.3.7-1-qv3gjag/gcc/12.3.0:\ngromacs/2023.1-mva2-cuda-openmp\n/usr/local/pace-apps/spack/modules/lmod/linux-rhel9-x86_64/gcc/12.3.0:\ncuda/12.1.1\ncuda/12.6.1\nhip/7.0.2-cuda\nhipblas/7.0.2-cuda\nhipsolver/7.0.2-cuda\nopenmpi/4.1.8-cuda\nopenmpi/5.0.9-cuda\n/usr/local/pace-apps/manual/modules/lmod/linux-rhel9-x86_64/Core:\nnvhpc-cuda/12.4\nnvhpc-cuda/12.9\nquantum-espresso/7.1-cuda\nr/4.2.1-cuda\nr/4.3.2-cuda\nr/4.4.1-cuda\n/usr/local/pace-apps/spack/modules/lmod/linux-rhel9-x86_64/Core:\ncuda/11.6.0\ncuda/11.7.0\ncuda/11.8.0\ncuda/12.1.1\ncuda/12.6.1-cu7yzjl\ncuda/12.6.1\ncuda/12.9.1\ncuda/13.0.1\ncudnn/8.4.0.27-11.6-cuda\ncudnn/8.5.0.96-11.7-cuda\ncudnn/9.2.0.82-11-cuda\ncudnn/9.2.0.82-12-cuda\nucx/1.18.0-cuda-openmp\n",
+      "stdout": ""
+    }
+  ],
+  "schema_version": 1,
+  "slurm_job_id": null,
+  "storage": {
+    "disk_free_bytes": 4265193882603520,
+    "existing_parent": "/storage/ice1/8/3/pablo3",
+    "os_access_write": false,
+    "quota_separate_from_disk_free": true,
+    "requested_root": "/storage/ice1/8/3/pablo3"
+  }
+}
