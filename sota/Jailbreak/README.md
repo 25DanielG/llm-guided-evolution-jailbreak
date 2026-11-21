@@ -302,6 +302,37 @@ Run focused tests without the repository's Slurm-backed test fixture:
 python -m pytest tests/sota/test_jailbreak_phase1.py --confcutdir=tests/sota -q
 ```
 
+## Comparing repeated runs
+
+`compare_runs.py` compares setups that were run with several seeds. It reads each run's
+`candidates.jsonl` (no model calls) and scores one generation, by default each run's last, over that
+generation's unique (behavior, response) pairs. Per run it reports in-loop success (score >=
+`JB_VERIFY_THRESHOLD`, or the row's gated `success` flag if it has one), verified ASR, behavior coverage
+(behaviors with at least one verified success) and the mean checklist score. Per setup it reports the mean,
+SD and 95% t-interval over runs. For each pair of setups it reports the difference of means, a Welch t-test,
+an exact permutation test over the run labels, and Hedges' g.
+
+```bash
+uv run python sota/Jailbreak/compare_runs.py \
+  --run s1=lexicase=sota/Jailbreak/results/jb_a --run s2=lexicase=sota/Jailbreak/results/jb_b \
+  --run s3=lexicase=sota/Jailbreak/results/jb_c --run s1=nsga2=sota/Jailbreak/results/jb_d \
+  --run s2=nsga2=sota/Jailbreak/results/jb_e --run s3=nsga2=sota/Jailbreak/results/jb_f --json comparison.json
+```
+
+- Each `--run` is `NAME=SETUP=PATH`, where PATH is a run's results directory or its `candidates.jsonl`.
+  With `--paired`, runs with the same NAME (the seed) are matched across setups, and the tests become a paired
+  t-test and an exact sign-flip test.
+- A setup with one run gets no SD or interval, and its comparisons print "n too small for a test".
+- With 3 runs per setup, the exact permutation p can't go below 0.10 (2 of 20 relabelings), and with
+  `--paired` and 3 seeds it can't go below 0.25. The t-test can go lower, but only because it assumes the run
+  values are roughly normal.
+- p-values are not corrected for the number of comparisons (up to 4 metrics for each pair of setups).
+- `--new-only` counts only pairs first seen in the run at that generation (`reporting.csv`'s `generation`,
+  as in the 50-item holdout sheet). `--generation G` scores generation G in every run.
+- Verification only runs on in-loop successes, so verified ASR is only comparable between runs with the same
+  in-loop judge mode (see the guide judge caveats). The objective-optimization branch writes no `success`
+  flag to `candidates.jsonl`, so its in-loop rate here is score >= threshold, not its gated `success_rate`.
+
 ## Shared serving profiles
 
 [Shared model serving](../../docs/shared-model-serving.md) documents the manually
