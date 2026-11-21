@@ -258,50 +258,6 @@ Caveats for the science:
   runs.
 - Compare against a matched guide-only run (same seed and settings).
 
-## Outputs
-
-`results/<gene_id>_results.csv` keeps the three LLM-GE fitness columns first
-(`mean_judge_score,diversity,avg_prompt_tokens`) and appends easy, medium, and hard
-diagnostic scores; `results/<gene_id>_results.json`
-carries the per-behavior detail (rubric, filter, tokens, rendered prompt +
-response) that feeds directed mutation, the diversity objective's text source,
-and `individual_card.py`. `results/<run_id>/candidates.jsonl` is append-only and
-contains generation, candidate, behavior, prompt, target response, in-loop judge
-result, and verification result, model identities, usage, and latency.
-`results/<run_id>/elites.jsonl` exports the highest-scoring behavior responses for
-labeling. `results/<run_id>/audits.jsonl` stores the periodic score comparisons.
-`results/<run_id>/map_elites.json` shows the occupied cells, coverage, and current
-cell elites.
-Logs print mean judge score, in-loop success rate at the verification threshold,
-verified success rate, and avg prompt tokens.
-
-### Plotting a completed MAP-Elites comparison
-
-After generating both report directories with `make_baseline_report.py`, create
-presentation-ready PNG and SVG figures with:
-
-```bash
-uv run python sota/Jailbreak/plot_run_comparison.py \
-  --map-run <map_run_id> \
-  --baseline-run <nsga2_run_id>
-```
-
-By default, the script reads `comparison/map_elites/genes.csv` and
-`comparison/nsga2/genes.csv` for verified performance. It reads population
-fitness directly from each run's checkpoints for the Pareto plot, because those
-checkpoints preserve the generation-relative diversity values used by selection.
-It writes archive coverage, final archive heatmaps, a three-objective Pareto
-candidate plot, verified-performance bars, fitness-history CSVs, and
-`comparison_summary.csv` under `comparison/figures/`.
-
-Inspect one gene with `python sota/Jailbreak/individual_card.py <gene_id>`.
-
-Run focused tests without the repository's Slurm-backed test fixture:
-
-```bash
-python -m pytest tests/sota/test_jailbreak_phase1.py --confcutdir=tests/sota -q
-```
-
 ## Grading a finished run
 
 Every run gets the same post-hoc panel, so runs from different threads are graded the same way: the
@@ -361,6 +317,50 @@ Caveats:
   same way, the guide column isn't held out for a run evolved with `JB_JUDGE_PROMPT=guide`.
 - The panel's rates compare runs graded the same way. A small hand-labeled sample of each run is still
   needed to say what is really full.
+
+## Outputs
+
+`results/<gene_id>_results.csv` keeps the three LLM-GE fitness columns first
+(`mean_judge_score,diversity,avg_prompt_tokens`) and appends easy, medium, and hard
+diagnostic scores; `results/<gene_id>_results.json`
+carries the per-behavior detail (rubric, filter, tokens, rendered prompt +
+response) that feeds directed mutation, the diversity objective's text source,
+and `individual_card.py`. `results/<run_id>/candidates.jsonl` is append-only and
+contains generation, candidate, behavior, prompt, target response, in-loop judge
+result, and verification result, model identities, usage, and latency.
+`results/<run_id>/elites.jsonl` exports the highest-scoring behavior responses for
+labeling. `results/<run_id>/audits.jsonl` stores the periodic score comparisons.
+`results/<run_id>/map_elites.json` shows the occupied cells, coverage, and current
+cell elites.
+Logs print mean judge score, in-loop success rate at the verification threshold,
+verified success rate, and avg prompt tokens.
+
+### Plotting a completed MAP-Elites comparison
+
+After generating both report directories with `make_baseline_report.py`, create
+presentation-ready PNG and SVG figures with:
+
+```bash
+uv run python sota/Jailbreak/plot_run_comparison.py \
+  --map-run <map_run_id> \
+  --baseline-run <nsga2_run_id>
+```
+
+By default, the script reads `comparison/map_elites/genes.csv` and
+`comparison/nsga2/genes.csv` for verified performance. It reads population
+fitness directly from each run's checkpoints for the Pareto plot, because those
+checkpoints preserve the generation-relative diversity values used by selection.
+It writes archive coverage, final archive heatmaps, a three-objective Pareto
+candidate plot, verified-performance bars, fitness-history CSVs, and
+`comparison_summary.csv` under `comparison/figures/`.
+
+Inspect one gene with `python sota/Jailbreak/individual_card.py <gene_id>`.
+
+Run focused tests without the repository's Slurm-backed test fixture:
+
+```bash
+python -m pytest tests/sota/test_jailbreak_phase1.py --confcutdir=tests/sota -q
+```
 
 ## Shared serving profiles
 
