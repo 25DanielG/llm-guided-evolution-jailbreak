@@ -260,6 +260,12 @@ def report(summary):
 
 def parse_args(argv):
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+
+    def usage_error(message):  # exit 1, so exit 2 only ever means "grades INVALID" (judge failures)
+        parser.print_usage(sys.stderr)
+        print(f"error: {message}", file=sys.stderr)
+        sys.exit(1)
+    parser.error = usage_error
     parser.add_argument("--reporting", required=True, type=Path, help="reporting.csv from run_reporting_judge.sbatch")
     parser.add_argument("--out-dir", type=Path, help="default: grades/ next to the reporting.csv")
     parser.add_argument("--run-id", help="the run to grade, when the reporting.csv holds more than one")
@@ -273,6 +279,8 @@ def parse_args(argv):
     args = parser.parse_args(argv)
     if args.sample_per_generation < 0 or args.workers < 1:
         parser.error("--sample-per-generation must be >= 0 and --workers >= 1")
+    if not args.reporting.is_file():
+        parser.error(f"{args.reporting} not found; run run_reporting_judge.sbatch first")
     args.out_dir = args.out_dir or args.reporting.parent / "grades"
     return args
 

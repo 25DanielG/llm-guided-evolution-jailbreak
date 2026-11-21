@@ -31,6 +31,8 @@ MODEL="${JB_GRADE_JUDGE_MODEL_PATH:-/storage/ice-shared/vip-vvk/llm_storage/meta
 [[ -d "$MODEL" ]] || { echo "ERROR: judge weights not found at $MODEL" >&2; exit 1; }
 # Check the arguments and the selection before loading 140GB of weights.
 "$PY" sota/Jailbreak/grade_run.py "$@" --dry-run
+# --help / --dry-run asked for only that: stop before holding 2 GPUs for the judge.
+for a in "$@"; do case "$a" in -h|--help|--dry-run) exit 0;; esac; done
 
 PORT="${JB_GRADE_JUDGE_PORT:-$("$PY" -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')}"
 LOG="jb_grade_judge_vllm_${SLURM_JOB_ID}.log"

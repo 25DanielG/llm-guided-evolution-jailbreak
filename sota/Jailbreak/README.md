@@ -313,12 +313,25 @@ sbatch run_reporting_judge.sbatch --candidates <run>/candidates.jsonl --out <run
 sbatch run_grade_run.sbatch --reporting <run>/reporting.csv --out-dir <run>/grades
 ```
 
+`<run>` is your run's folder, `sota/Jailbreak/results/<run_id>`. To check the selection without a GPU,
+run `python3 sota/Jailbreak/grade_run.py --reporting <run>/reporting.csv --dry-run` on the login node.
+
 The second job grades the last generation by default. `--generations all` or `--generations 0,8,16`
 picks others, `--sample-per-generation K` grades at most K per generation (fixed `--seed`, default 0),
 and `--run-id` picks one run from a reporting.csv that holds several. Each response costs 5 judge
 requests, so for every generation of a long run, sample or ask for more than the 4 hour default `-t`.
+Nothing is saved if the job hits its time limit, and a resubmit starts over. sbatch options go before the
+script name; everything after it goes to grade_run.py:
+
+```bash
+sbatch -t 12:00:00 run_grade_run.sbatch --reporting <run>/reporting.csv --out-dir <run>/grades --generations all
+JB_GRADE_JUDGE_MODEL_PATH=/path/to/weights sbatch run_grade_run.sbatch --reporting <run>/reporting.csv
+```
+
 The job checks its arguments before loading the 70B. It serves the 70B like `run_jailbreak.sbatch`'s guide
-judge, on a free local port, with a fresh verdict cache. `JB_GRADE_JUDGE_MODEL_PATH` overrides the weights.
+judge, on a free local port, with a fresh verdict cache. Its counts and errors are in `jb_grade_<jobid>.out`
+and the server log in `jb_grade_judge_vllm_<jobid>.log`, both in the folder you submitted from. The server
+log may contain request text, so don't share it.
 
 `grades.csv` has one row per graded response, with ids and numbers only:
 
@@ -337,7 +350,8 @@ the mean, that is the Wilson interval on the mean, which is conservative for a 0
 parse-failure counts are included too. No behavior or response text is written or printed, so
 `grade_summary.md` can go in the group chat. reporting.csv and the job's vLLM log are not covered by that.
 If more than 5% of either judge's verdicts fail, the files are still written but the summary is marked
-INVALID and the job exits 2. Read `error_kinds` in grade_summary.json and check the server.
+INVALID and the job exits 2. Read `error_kinds` in grade_summary.json and check the server. Every other
+failure (bad arguments, missing files, a server that never starts) exits 1.
 
 Caveats:
 

@@ -3,6 +3,7 @@ import importlib
 import json
 import math
 import random
+import shlex
 import subprocess
 import sys
 import threading
@@ -313,3 +314,33 @@ def test_sbatch_parses_and_serves_the_judge_like_run_jailbreak():
                    "/storage/ice-shared/vip-vvk/llm_storage/meta-llama/Llama-3.3-70B-Instruct",
                    'grade_run.py "$@" --dry-run', 'grade_run.py "$@"', "JB_CACHE_DIR=", "trap "):
         assert needed in script, needed
+
+
+@pytest.mark.parametrize("argv", [["--reporting", "missing.csv"], ["--generations", "foo", "--reporting", "x.csv"], []])
+def test_usage_errors_exit_1_so_exit_2_only_means_invalid_grades(tmp_path, argv, capsys):
+    with pytest.raises(SystemExit) as stop:
+        grade_run.parse_args([a.replace("missing.csv", str(tmp_path / "missing.csv")) for a in argv])
+    assert stop.value.code == 1 and "error:" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("flag", ["--dry-run", "--help"])
+def test_sbatch_stops_before_serving_on_dry_run_or_help(tmp_path, flag):
+    root = Path(__file__).resolve().parents[2]
+    script = (root / "run_grade_run.sbatch").read_text()
+    script = script.split('PORT="${JB_GRADE_JUDGE_PORT')[0] + 'echo "REACHED SERVER START"\n'
+    home = tmp_path / "home"
+    (home / ".local/share/uv/tools/vllm/bin").mkdir(parents=True)
+    fake_python = home / ".local/share/uv/tools/vllm/bin/python"  # a symlink would lose the venv's packages
+    fake_python.write_text(f'#!/bin/sh\nexec {shlex.quote(sys.executable)} "$@"\n')
+    fake_python.chmod(0o755)
+    weights = tmp_path / "weights"
+    weights.mkdir()
+    reporting_csv = tmp_path / "reporting.csv"
+    write_reporting(reporting_csv, fixture_rows())
+    env = {"PATH": "/usr/bin:/bin", "HOME": str(home), "SLURM_SUBMIT_DIR": str(root), "SLURM_JOB_ID": "t",
+           "JB_GRADE_JUDGE_MODEL_PATH": str(weights)}
+    run = subprocess.run(["bash", "-c", "module() { return 0; }\n" + script, "x", "--reporting", str(reporting_csv),
+                          flag], env=env, capture_output=True, text=True, timeout=60, cwd=root)
+    assert "REACHED SERVER START" not in run.stdout
+    if flag == "--dry-run":  # the dry run itself must have worked, or this test proves nothing
+        assert run.returncode == 0, run.stderr
