@@ -331,7 +331,10 @@ uv run python sota/Jailbreak/compare_runs.py \
   as in the 50-item holdout sheet). `--generation G` scores generation G in every run.
 - Verification only runs on in-loop successes, so verified ASR is only comparable between runs with the same
   in-loop judge mode (see the guide judge caveats). The objective-optimization branch writes no `success`
-  flag to `candidates.jsonl`, so its in-loop rate here is score >= threshold, not its gated `success_rate`.
+  flag to `candidates.jsonl`, so by default its in-loop rate here is score >= threshold, not its gated
+  `success_rate`. Add `--gated` to count that branch's gate instead (guide mode: P(full) >= 0.5; rubric
+  mode: not refused and on topic). It is opt-in because main-branch rubric rows look the same, and main
+  counts score >= threshold.
 
 ## Shared serving profiles
 
