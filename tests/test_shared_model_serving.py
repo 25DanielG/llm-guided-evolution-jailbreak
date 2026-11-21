@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -44,7 +45,9 @@ class SharedModelTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
             fake_python = tmp / "python3"
-            fake_python.write_text(f'#!{sys.executable}\nimport json, sys\nprint(json.dumps(sys.argv[1:]))\n')
+            # A shebang can't hold a path with spaces, so wrap the interpreter in sh.
+            fake_python.write_text(f'#!/bin/sh\nexec {shlex.quote(sys.executable)} -c '
+                                   '"import json, sys; print(json.dumps(sys.argv[1:]))" "$@"\n')
             fake_python.chmod(0o755)
             env = {k: v for k, v in os.environ.items() if not k.startswith("JB_")}
             env.update(PATH=f'{tmp}:{env["PATH"]}', SLURM_SUBMIT_DIR=str(ROOT),
