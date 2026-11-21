@@ -12,15 +12,18 @@ _conn = None
 
 def _get_conn(cache_dir):
     global _conn
-    if _conn is None:
-        os.makedirs(cache_dir, exist_ok=True)
-        db_path = os.path.join(cache_dir, "jb_cache.sqlite")
-        _conn = sqlite3.connect(db_path, check_same_thread=False, timeout=30)
-        _conn.execute("PRAGMA journal_mode=WAL;")
-        _conn.execute(
-            "CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
-        )
-        _conn.commit()
+    with _lock:
+        if _conn is None:
+            os.makedirs(cache_dir, exist_ok=True)
+            db_path = os.path.join(cache_dir, "jb_cache.sqlite")
+            conn = sqlite3.connect(db_path, check_same_thread=False, timeout=30)
+            conn.execute("PRAGMA journal_mode=WAL;")
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+            )
+            conn.commit()
+            # Publish only once the table exists, so a racing thread never queries a bare database.
+            _conn = conn
     return _conn
 
 def _hash(*parts):
