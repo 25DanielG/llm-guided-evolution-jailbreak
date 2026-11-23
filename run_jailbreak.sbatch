@@ -239,8 +239,12 @@ if [[ -n "$JUDGE_PROFILE" ]]; then
 fi
 
 # target vLLM (weaker model)
+TARGET_PATH="$PATH"
+if [[ -n "${JB_TARGET_VLLM_BIN:-}" ]]; then
+    TARGET_PATH="$(dirname "$JB_TARGET_VLLM_BIN"):$PATH"
+fi
 TARGET_PID=$(start_with_retry "target vLLM" sota/Jailbreak/target_vllm.out \
-    env CUDA_VISIBLE_DEVICES="$TARGET_DEV" JB_VLLM_BIN="${JB_TARGET_VLLM_BIN:-${JB_VLLM_BIN:-vllm}}" "${TARGET_COMMAND[@]}") || exit 1
+    env PATH="$TARGET_PATH" CUDA_VISIBLE_DEVICES="$TARGET_DEV" JB_VLLM_BIN="${JB_TARGET_VLLM_BIN:-${JB_VLLM_BIN:-vllm}}" "${TARGET_COMMAND[@]}") || exit 1
 echo "$HOST:$TARGET_PORT" > sota/Jailbreak/target_host.log
 export JB_TARGET_VLLM_URL="http://$HOST:$TARGET_PORT/v1"
 

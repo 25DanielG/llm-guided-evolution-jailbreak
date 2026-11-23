@@ -60,7 +60,9 @@ Muse Glimmer needs a separate newer vLLM serving environment. The existing
 vLLM 0.17.0 environment predates this model. Set `JB_TARGET_VLLM_BIN` to the
 Muse-compatible executable for its target service while leaving `JB_VLLM_BIN`
 on the validated environment for the judge and reporter. Validate the target
-with text-only chat and a full pipeline smoke before evolution.
+with text-only chat and a full pipeline smoke before evolution. The launcher
+puts the target environment's `bin` directory on that service's PATH so
+FlashInfer can find its `ninja` executable.
 
 Weight estimates are capacity planning, **not measured peak VRAM**. New profiles
 use TP=1, context 4096, max 8 sequences, GPU utilization 0.9. GPU memory is distinct

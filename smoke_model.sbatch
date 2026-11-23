@@ -18,6 +18,7 @@ cd "$SLURM_SUBMIT_DIR"
 : "${JB_SMOKE_RESULTS:?Persistent, permitted result directory outside checkpoints}"
 : "${JB_CUDA_MODULE:?Verified compatible CUDA module}"
 module load "$JB_CUDA_MODULE"
+export PATH="$JB_SERVING_ENV/bin:$PATH"
 export JB_VLLM_BIN="$JB_SERVING_ENV/bin/vllm"
 TP_ARGS=()
 [[ -z "${JB_SERVE_TP:-}" ]] || TP_ARGS=(--tp "$JB_SERVE_TP")
