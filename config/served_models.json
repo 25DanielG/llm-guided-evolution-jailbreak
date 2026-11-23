@@ -79,6 +79,19 @@
       "backend": "vllm",
       "max_model_len": 4096,
       "max_num_seqs": 8
+    },
+    "muse-glimmer-30b": {
+      "model_id": "meta-models/Muse-Glimmer-30B",
+      "revision": "1297fd7dfeac4598948a5d15886968435c81c2b7",
+      "provider": "Meta",
+      "precision": "bfloat16",
+      "tensor_parallel_size": 1,
+      "gpu_memory_note": "Approximately 60 GB BF16 checkpoint; use one H200 for first acceptance test. Peak memory unverified.",
+      "status": "configured",
+      "vllm_args": ["--dtype", "bfloat16"],
+      "backend": "vllm",
+      "max_model_len": 4096,
+      "max_num_seqs": 8
     }
   }
 }

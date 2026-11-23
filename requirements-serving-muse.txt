@@ -1,0 +1,5 @@
+# Separate from requirements-serving.txt: Muse Glimmer requires vLLM 0.28.0.
+# Resolve in a new Python 3.12 environment; verify CUDA 13.0 on an H200 node.
+vllm==0.28.0
+torch==2.13.0
+transformers==5.24.0

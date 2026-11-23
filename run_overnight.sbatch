@@ -15,6 +15,18 @@ cd "$SLURM_SUBMIT_DIR"
 : "${SLURM_JOB_ID:?This launcher requires an existing Slurm allocation}"
 : "${RUN_ID:?Set a stable RUN_ID; do not generate a new ID when resuming}"
 : "${JB_EXPERIMENT_PYTHON:?Absolute Python 3.12 from the existing experiment environment}"
+if [[ -n "${JB_PREVIOUS_STATUS:-}" ]]; then
+    "$JB_EXPERIMENT_PYTHON" -c 'import json,sys; s=json.load(open(sys.argv[1])); sys.exit(0 if s.get("run_id")==sys.argv[2] and s.get("state")=="COMPLETED" else 1)' \
+        "$JB_PREVIOUS_STATUS" "${JB_PREVIOUS_RUN_ID:?Set JB_PREVIOUS_RUN_ID with JB_PREVIOUS_STATUS}" || {
+        echo "Previous run has not completed: $JB_PREVIOUS_STATUS" >&2
+        exit 2
+    }
+fi
+if [[ "${JB_RESUME_MODE:-}" == required && -f "$RUN_ID/status.json" ]] &&
+   "$JB_EXPERIMENT_PYTHON" -c 'import json,sys; s=json.load(open(sys.argv[1])); sys.exit(0 if s.get("run_id")==sys.argv[2] and s.get("state")=="COMPLETED" else 1)' "$RUN_ID/status.json" "$RUN_ID"; then
+    echo "Run $RUN_ID is already complete; skipping redundant continuation"
+    exit 0
+fi
 CHECKPOINT_ARGS=()
 [[ -z "${JB_CHECKPOINT_FILE:-}" ]] || CHECKPOINT_ARGS=(--checkpoint-file "$JB_CHECKPOINT_FILE")
 case "${JB_RESUME_MODE:-}" in

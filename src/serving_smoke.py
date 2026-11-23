@@ -99,9 +99,12 @@ def run(name, output, experiment_python, tp=None, port=18001, proxy_port=18137, 
         validate_checkpoint(name, checkpoint)
         import torch
         import vllm
-        if (importlib.metadata.version('vllm') != '0.17.0' or torch.__version__.split('+')[0] != '2.10.0'
-                or torch.version.cuda != '12.9'):
-            raise RuntimeError('Serving runtime differs from requirements-serving.txt; use the separate pinned environment')
+        expected_runtime = (('0.28.0', '2.13.0', '13.0') if name == 'muse-glimmer-30b'
+                            else ('0.17.0', '2.10.0', '12.9'))
+        actual_runtime = (importlib.metadata.version('vllm'), torch.__version__.split('+')[0],
+                          torch.version.cuda)
+        if actual_runtime != expected_runtime:
+            raise RuntimeError(f'Serving runtime {actual_runtime} differs from expected {expected_runtime}')
         if not torch.cuda.is_available() or torch.cuda.device_count() < (tp or item['tensor_parallel_size']):
             raise RuntimeError('Serving runtime cannot see the requested CUDA GPUs')
         # Resolve logical CUDA devices to physical UUIDs: Slurm can remap indices.

@@ -23,14 +23,14 @@ Existing services are allocation-scoped, not an always-on cluster gateway:
 
 | Role | Existing backend/interface | Discovery and selection |
 | --- | --- | --- |
-| Mutator | `server.py`: Transformers, FastAPI `/generate`, port 8137 | `hostname.log`, `JB_MUTATOR_MODEL_PATH`, `--llm_model` |
-| Target | vLLM `/v1/chat/completions`, port 8001 | `sota/Jailbreak/target_host.log`, `JB_TARGET_VLLM_URL`, served name `target` |
-| In-loop judge | vLLM chat, port 8002 | `judge_host.log`, `JB_JUDGE_VLLM_URL`, served name `judge` |
-| Held-out reporter | vLLM raw completions, port 8003 | `reporting_host.log`, `JB_REPORTING_VLLM_URL`, HarmBench ID |
+| Mutator | `server.py`: Transformers, FastAPI `/generate`, job-specific port | `hostname.log`, `LLMGE_PORT`, `JB_MUTATOR_MODEL_PATH`, `--llm_model` |
+| Target | vLLM `/v1/chat/completions`, job-specific port | `sota/Jailbreak/target_host.log`, `JB_TARGET_VLLM_URL`, served name `target` |
+| In-loop judge | vLLM chat, job-specific port | `judge_host.log`, `JB_JUDGE_VLLM_URL`, served name `judge` |
+| Held-out reporter | vLLM raw completions, job-specific port | `reporting_host.log`, `JB_REPORTING_VLLM_URL`, HarmBench ID |
 
 `run_jailbreak.sbatch` launches these together on one node. Existing path-based
 selection and the Transformers mutator remain available. Opt-in mutator profiles
-launch vLLM on port 8004 and make the **same `server.py` `/generate` endpoint** a
+launch vLLM on a job-specific backend port and make the **same `server.py` `/generate` endpoint** a
 proxy. vLLM applies the model's chat template to a user message containing the
 pipeline prompt. No second experiment client or new inference library is needed.
 
@@ -54,6 +54,13 @@ change. `existing` records pre-existing support, not a new deployment verificati
 | `gpt-oss-20b` | `openai/gpt-oss-20b` / OpenAI | Native MXFP4 MoE weights, other tensors in checkpoint precision | Official model minimum 16 GB; shared smoke plan: 1 H100 (80 GB) or H200 (141 GB) | configured |
 | `gpt-oss-120b` | `openai/gpt-oss-120b` / OpenAI | Native MXFP4 MoE weights, other tensors in checkpoint precision | Official single-GPU guidance: 80 GB; prefer 1 H200 for headroom or test TP=2 on 2 H100s | configured |
 | `devstral-small-2-24b` | `mistralai/Devstral-Small-2-24B-Instruct-2512` / Mistral AI | Native FP8 checkpoint | ~24 GB weights plus runtime/KV/vision overhead; plan >=48 GB; shared smoke plan: 1 H100 or H200 | configured |
+| `muse-glimmer-30b` | `meta-models/Muse-Glimmer-30B` / Meta | BF16 | ~60 GB checkpoint; first smoke on 1 H200 | configured |
+
+Muse Glimmer needs a separate newer vLLM serving environment. The existing
+vLLM 0.17.0 environment predates this model. Set `JB_TARGET_VLLM_BIN` to the
+Muse-compatible executable for its target service while leaving `JB_VLLM_BIN`
+on the validated environment for the judge and reporter. Validate the target
+with text-only chat and a full pipeline smoke before evolution.
 
 Weight estimates are capacity planning, **not measured peak VRAM**. New profiles
 use TP=1, context 4096, max 8 sequences, GPU utilization 0.9. GPU memory is distinct
@@ -62,7 +69,7 @@ from host RAM: `serve_model.sbatch` requests 96 GB host RAM, one H100 **or** H20
 environment variables inside `#SBATCH` lines are not expanded. These choices need acceptance testing; full 128k/256k
 contexts need substantially more KV memory. The combined run still requests 192 GB
 host RAM by default; adjust after measurement. It needs target TP + judge TP +
-reporter 1 + mutator TP GPUs. Default four; using the 70B profile adds one GPU for
+reporter 1 + mutator TP GPUs. The current 70B guide default requires five GPUs; using the 70B profile adds one GPU for
 each role that uses it.
 
 ### Model-specific behavior
@@ -217,7 +224,7 @@ this performs the existing smoke checks without evolution:
 export JB_RUN_TARGET_PROFILE=gpt-oss-20b
 export JB_TARGET_MAX_NEW_TOKENS=2048
 export JB_SMOKE_ONLY=1
-sbatch -N 1 -G 4 --constraint="$JB_GPU_CONSTRAINT" --export=ALL run_jailbreak.sbatch
+sbatch -N 1 -G 5 --constraint="$JB_GPU_CONSTRAINT" --export=ALL run_jailbreak.sbatch
 ```
 
 To select a new mutator instead, set `JB_RUN_MUTATOR_PROFILE` to any new registry
@@ -229,7 +236,7 @@ first; existing target/judge/reporter identity checks still apply.
 For profile roles, `JB_RUN_TARGET_TP`, `JB_RUN_JUDGE_TP`, and `JB_RUN_MUTATOR_TP`
 override registry TP and are passed to both GPU grouping and vLLM. Request
 `target TP + judge TP + 1 reporter + mutator TP` GPUs on one node. For example,
-GPT-OSS 120B target TP=2 with the other default roles needs `-G 5`, not `-G 4`.
+GPT-OSS 120B target TP=2 with the current default roles needs `-G 6`.
 
 Increase `JB_*_MAX_MODEL_LEN`/generation budgets only after memory validation. Mutator
 prompts default to the pipeline's original text; Devstral's optional

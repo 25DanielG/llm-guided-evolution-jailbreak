@@ -222,7 +222,7 @@ MUTATOR_PORT=$((PORT_BASE + 5))
 export JB_TARGET_VLLM_PORT="$TARGET_PORT" JB_JUDGE_VLLM_PORT="$JUDGE_PORT"
 export JB_REPORTING_VLLM_PORT="$REPORTING_PORT" LLMGE_PORT="$MUTATOR_PORT"
 echo "Service ports: target=$TARGET_PORT judge=$JUDGE_PORT reporting=$REPORTING_PORT mutator=$MUTATOR_PORT"
-TARGET_COMMAND=("${JB_VLLM_BIN:-vllm}" serve "$TARGET_MODEL" --served-model-name target
+TARGET_COMMAND=("${JB_TARGET_VLLM_BIN:-${JB_VLLM_BIN:-vllm}}" serve "$TARGET_MODEL" --served-model-name target
     --host 0.0.0.0 --port "$TARGET_PORT" --gpu-memory-utilization 0.9)
 if [[ -n "$TARGET_PROFILE" ]]; then
     TARGET_COMMAND=(python3 -m src.model_serving serve --model "$TARGET_PROFILE"
@@ -240,7 +240,7 @@ fi
 
 # target vLLM (weaker model)
 TARGET_PID=$(start_with_retry "target vLLM" sota/Jailbreak/target_vllm.out \
-    env CUDA_VISIBLE_DEVICES="$TARGET_DEV" "${TARGET_COMMAND[@]}") || exit 1
+    env CUDA_VISIBLE_DEVICES="$TARGET_DEV" JB_VLLM_BIN="${JB_TARGET_VLLM_BIN:-${JB_VLLM_BIN:-vllm}}" "${TARGET_COMMAND[@]}") || exit 1
 echo "$HOST:$TARGET_PORT" > sota/Jailbreak/target_host.log
 export JB_TARGET_VLLM_URL="http://$HOST:$TARGET_PORT/v1"
 
