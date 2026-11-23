@@ -1,12 +1,12 @@
 #!/bin/bash
 # Override --time=12:00:00 only after checking live partition AND account/QoS limits.
-# The conservative 4-hour default supports explicit checkpoint continuation.
+# The 3-hour default fits five GPUs within the 960 GPU-minute coe-ice limit.
 #SBATCH --job-name=jb_supervised
 #SBATCH -N 1
-#SBATCH -G 4
+#SBATCH -G 5
 #SBATCH --mem=192G
 #SBATCH -c 24
-#SBATCH -t 4:00:00
+#SBATCH -t 3:00:00
 #SBATCH --signal=B:USR1@900
 #SBATCH --no-requeue
 #SBATCH -o jb_supervised_%j.out

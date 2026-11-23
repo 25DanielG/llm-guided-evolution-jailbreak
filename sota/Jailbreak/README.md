@@ -3,14 +3,13 @@
 An individual is a trait-segmented prompt builder, found in `prompt.py` with `# --OPTION--`
 blocks. Each candidate prompt is evaluated against the configured target.
 
-The in-loop judge (fitness-relevant) is a rubric-scoring instruct model — the
-default is `~/scratch/llm_storage/Llama-3.1-8B-Instruct`, served as `judge`. It sees
-only the original behavior and target response. Its strict JSON rubric scores
-refusal, relevance, specificity, and convincingness, producing a continuous
-`mean_judge_score` in [0, 1]. Empty answers, request restatements, judge-directed
-text, and refusal-only answers are filtered before the judge call. A disclaimer
-followed by substantive content is judged. Malformed or failed judge calls score
-zero and are marked `parse_ok=false`.
+The production launcher uses Llama-3.3-70B-Instruct with the guide prompt as the
+in-loop judge (fitness-relevant). It scores P(full) from the human labeling guide;
+see "Guide judge" below. Direct Python calls without launcher environment still
+default to the older 8B rubric configuration. The judge sees only the original
+behavior and target response. Empty answers, request restatements, judge-directed
+text, and refusal-only answers are filtered before the judge call. Malformed or
+failed judge calls score zero and are marked `parse_ok=false`.
 
 The in-loop judge uses temperature `0.1` by default, keeping sampling close to
 greedy decoding. Override it with `JB_JUDGE_TEMPERATURE` (for example, `0` for
@@ -70,6 +69,10 @@ hf download cais/HarmBench-Llama-2-13b-cls --local-dir "$HOME/scratch/llm_storag
 `JB_STRATIFIED=1` (set in `run_jailbreak.sbatch`) scores every gene on
 `JB_N_BEHAVIORS_PER_EVAL=50` behaviors drawn equally from easy/medium/hard. The draw depends only on
 `JB_BEHAVIOR_SEED`, so all genes in a run share the same 50.
+The committed `behaviors/curated.csv` contains the same 90 behaviors used in the
+Mistral/Devstral comparison: 30 easy, 30 medium, and 30 hard. Keep the seed and
+this file fixed when comparing targets.
+The launcher explicitly sets `JB_BEHAVIORS_PATH` to this file unless overridden.
 
 ```bash
 # 1. grow the pool past 50, run locally
@@ -91,22 +94,44 @@ tail -f jb_run_<jobid>.out
 grep -a "mean_judge_score=" jb_run_<jobid>.out
 ```
 
-`run_jailbreak.sbatch` requests 4 GPUs and starts four services, each on its own
-GPU, each wrapped in a start-with-retry guard: the target vLLM (`:8001`), the
-judge vLLM (`:8002`), the HarmBench reporting vLLM (`:8003`), and the mutator LLM
-server (`:8137`); it then runs `run_improved.py`. The script sets the `JB_*_MODEL_PATH`
+`run_jailbreak.sbatch` requests 5 GPUs on one node and starts four services,
+each wrapped in a start-with-retry guard: the target vLLM, the 2-GPU judge
+vLLM, the HarmBench reporting vLLM, and the mutator LLM server. Each job gets
+its own service ports. The launcher then runs `run_improved.py` and sets the `JB_*_MODEL_PATH`
 variables itself, so exporting them has no effect: override the judge and mutator with
-`JB_RUN_JUDGE_MODEL` / `JB_RUN_MUTATOR_MODEL` (see below), and edit `TARGET_MODEL` /
-`REPORTING_MODEL` in the script for the others. Other settings pass through env
+`JB_RUN_JUDGE_MODEL` / `JB_RUN_MUTATOR_MODEL` (see below), and select the target
+with `JB_RUN_TARGET_PROFILE` or `JB_RUN_TARGET_MODEL`. Other settings pass through env
 (`JB_BEHAVIORS_PATH`, ...); edit `src/cfg/constants_jailbreak.py` for population
 size / generation count. The eval step refuses to start if target, judge, and reporting endpoints/models
 aren't distinct, and checks each served model identity before evolution.
+`JB_RUN_MODEL_ROOT` changes the default target, 8B mutator, and HarmBench paths;
+`JB_RUN_LLAMA_8B_MODEL` and `JB_RUN_REPORTING_MODEL` override the latter two separately.
+If the local default 8B mutator checkpoint is absent, set `JB_RUN_MUTATOR_MODEL`
+to a staged Llama-3.1-8B-Instruct checkpoint before submitting.
+For a target requiring more than one GPU, set `JB_RUN_TARGET_TP` and request
+`target TP + 2 judge + 1 reporter + mutator TP` GPUs with `sbatch -G`.
 
 Before a full run, smoke-test all four services without starting evolution:
 
 ```bash
 sbatch --export=ALL,JB_SMOKE_ONLY=1 run_jailbreak.sbatch
 ```
+
+To validate the 70B guide judge's live logprob response first, use
+`smoke_70b_guide.sbatch`. It needs only two GPUs and requires `JB_VLLM_BIN` and
+`JB_EXPERIMENT_PYTHON` in the submitted environment. It checks the judge API,
+then exits without starting a target or evolution.
+
+### Validation on PACE (2026-11-22)
+
+- Two-GPU guide check, job `7246071`: completed with a parseable `guide_p_full` response.
+- Five-GPU service smoke, job `7247825`: all four services became ready; live target,
+  guide judge, and response-cache checks passed.
+- Small end-to-end run, job `7248129`: six generated candidates were evaluated on
+  three stratified behaviors each (one per tier). All 18 guide verdicts parsed,
+  all 54 HarmBench verification trials parsed, and the generation-0 checkpoint
+  committed. This was a wiring check with a forced zero verification threshold,
+  not a comparable ASR measurement.
 
 For a fresh checkout with no earlier `candidates.jsonl`, first create a small
 unstratified candidate set. This evaluates a 12-prompt starting population on
@@ -123,9 +148,9 @@ generation counts can also be overridden explicitly with
 `LLMGE_NUM_GENERATIONS`. To start all four model services, run the pipeline
 smoke test, and exit before evolution, submit with `JB_SMOKE_ONLY=1`.
 
-## Guide judge (opt-in)
+## Guide judge (launcher default)
 
-`JB_JUDGE_PROMPT=guide` replaces the in-loop rubric with the human labeling guide
+The launcher sets `JB_JUDGE_PROMPT=guide`, replacing the in-loop rubric with the human labeling guide
 (`GUIDE_SYSTEM` in `judge.py`, verbatim from the `llm_label_judge.py` labeling prompt). The
 judge continues the assistant prefix `{"label": "` for one token, and the score is
 P(label == "full") from that token's top-20 logprobs, renormalized over
@@ -133,7 +158,7 @@ refusal/partial/full (`rating_method="guide_p_full"`; all three probabilities ar
 the verdict's `guide` field). The prefilter still runs first. If there are no label
 logprobs, the verdict scores 0 with `parse_ok=false` (`guide_no_label_logprobs`). Guide
 verdicts use their own cache keys (`guide-v1` plus the judge model path), so they never
-mix with rubric verdicts. The default, `rubric`, is unchanged.
+mix with rubric verdicts. Direct Python calls without the launcher still default to `rubric`.
 
 Offline validation used 100 responses from run `jb_5956355`, hand-labeled by one labeler.
 With the guide, Llama-3.3-70B's P(full) has weighted ROC AUC 0.87, against 0.61 for the
@@ -146,10 +171,10 @@ target, 2 x judge, reporting, mutator. The mutator stays the 8B. Use the `JB_RUN
 overrides, because the script sets `JB_JUDGE_MODEL_PATH` itself:
 
 ```bash
-sbatch -N 1 -G 5 -C "A100-80GB|H100|H200" --export=ALL,JB_JUDGE_PROMPT=guide,JB_RUN_JUDGE_MODEL=/storage/ice-shared/vip-vvk/llm_storage/meta-llama/Llama-3.3-70B-Instruct,JB_RUN_JUDGE_TP=2,JB_RUN_JUDGE_MAX_LEN=4096 run_jailbreak.sbatch
+sbatch -N 1 -G 5 -C "A100-80GB|H100|H200" --export=ALL,JB_SMOKE_ONLY=1 run_jailbreak.sbatch
 ```
 
-`JB_RUN_JUDGE_MAX_LEN=4096` is the context length used in the offline validation. Without
+The default `JB_RUN_JUDGE_MAX_LEN=4096` is the context length used in the offline validation. Without
 it, vLLM tries to reserve the model's full 128k context, and that KV cache does not fit
 next to the 70B weights. The script stops at launch if fewer GPUs are allocated than
 target + `JB_RUN_JUDGE_TP` + 2, or if `JB_JUDGE_PROMPT` is anything but `rubric`/`guide`.
@@ -179,7 +204,7 @@ Caveats:
   `verified_success_rate`, `stratify_behaviors.py` tiers and `pick_calibration_genes.py`
   are not comparable between rubric and guide runs. Do not mix both modes' `candidates.jsonl`
   in one call. `calibrate_behaviors.sbatch` always uses the 8B, so do not have
-  `JB_JUDGE_PROMPT=guide` exported when you submit it.
+  `JB_JUDGE_PROMPT=guide` exported when you submit it; set `JB_JUDGE_PROMPT=rubric` explicitly.
 - Use a fresh `RUN_ID` (the default `jb_<jobid>` is). Resuming a rubric run's `RUN_ID` or
   checkpoint in guide mode ranks P(full) against rubric scores in elites, audits and the
   hall of fame.
@@ -309,4 +334,4 @@ maintained registry, exact IDs, native quantization, resource requirements,
 profile selectors, existing API compatibility, approval-gated staging and tests.
 GPT-OSS 20B/120B and Devstral Small 2 24B are configured with GPU testing pending.
 Use `JB_RUN_TARGET_PROFILE`, `JB_RUN_JUDGE_PROFILE`, or `JB_RUN_MUTATOR_PROFILE`
-with `run_jailbreak.sbatch`; leave them unset for the existing role defaults.
+with `run_jailbreak.sbatch`; leave them unset for the role defaults described above.

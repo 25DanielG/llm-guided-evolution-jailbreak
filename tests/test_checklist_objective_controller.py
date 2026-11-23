@@ -85,7 +85,7 @@ def _sbatch_prefix(tmp_path, **env_overrides):
     script = 'module() { return 0; }; python3() { "$REAL_PYTHON" "$@"; }\n' + script
     env = {k: v for k, v in os.environ.items() if not k.startswith("JB_")}
     env.update(REAL_PYTHON=sys.executable, SLURM_SUBMIT_DIR=str(ROOT), SLURM_JOB_ID="cpu-test", TMPDIR=str(tmp_path),
-               CUDA_VISIBLE_DEVICES="GPU-a,GPU-b,GPU-c,GPU-d", **env_overrides)
+               CUDA_VISIBLE_DEVICES="GPU-a,GPU-b,GPU-c,GPU-d,GPU-e", **env_overrides)
     return subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, timeout=30)
 
 
@@ -102,17 +102,19 @@ def test_sbatch_rejects_bad_values(tmp_path, value):
     assert run.returncode != 0 and "JB_CHECKLIST_OBJECTIVE must be 0 or 1" in run.stderr
 
 
-def test_sbatch_flag_on_warns_about_the_8b_judge_and_the_selector(tmp_path):
+def test_sbatch_flag_on_uses_the_70b_judge_and_warns_about_the_selector(tmp_path):
     run = _sbatch_prefix(tmp_path, JB_CHECKLIST_OBJECTIVE="1")
     assert run.returncode == 0, run.stderr
     assert "Checklist objective: on" in run.stdout
-    assert "validated on the 70B" in run.stderr and "only steers parent selection" in run.stderr
+    assert "Llama-3.3-70B-Instruct" in run.stdout
+    assert "only steers parent selection" in run.stderr
     nsga2 = _sbatch_prefix(tmp_path, JB_CHECKLIST_OBJECTIVE="1", JB_SELECTION="NSGA2")
     assert nsga2.returncode == 0 and "only steers parent selection" not in nsga2.stderr
 
 
 def test_sbatch_flag_on_refuses_a_non_70b_judge_profile(tmp_path):
-    profile = dict(JB_VLLM_BIN="/fake/bin/vllm", JB_CUDA_MODULE="fake-cuda")
+    profile = dict(JB_VLLM_BIN="/fake/bin/vllm", JB_CUDA_MODULE="fake-cuda",
+                   JB_JUDGE_PROMPT="rubric")
     run = _sbatch_prefix(tmp_path, JB_CHECKLIST_OBJECTIVE="1", JB_RUN_JUDGE_PROFILE="gpt-oss-20b", **profile)
     assert run.returncode != 0 and "checklist objective is validated only with llama-3.3-70b" in run.stderr
     ok = _sbatch_prefix(tmp_path, JB_CHECKLIST_OBJECTIVE="1", JB_RUN_JUDGE_PROFILE="llama-3.3-70b", **profile)

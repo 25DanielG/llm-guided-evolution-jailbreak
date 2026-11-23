@@ -70,10 +70,11 @@ class SharedModelTests(unittest.TestCase):
         script += '\nprintf "TARGET=%s\\n" "${TARGET_COMMAND[*]}"; printf "JUDGE=%s\\n" "${JUDGE_COMMAND[*]}"\n'
         with tempfile.TemporaryDirectory() as tmp:
             env = {k: v for k, v in os.environ.items() if not k.startswith("JB_")}
-            env.update(REAL_PYTHON=sys.executable, SLURM_SUBMIT_DIR=str(ROOT), SLURM_JOB_ID="cpu-test",
+            env.update(REAL_PYTHON=sys.executable, SLURM_SUBMIT_DIR=str(ROOT), SLURM_JOB_ID="12345",
                        TMPDIR=tmp, CUDA_VISIBLE_DEVICES="a,b,c,d,e,f,g", JB_CUDA_MODULE="fake-cuda",
                        JB_VLLM_BIN="/fake/bin/vllm", JB_RUN_TARGET_PROFILE="gpt-oss-120b",
                        JB_RUN_JUDGE_PROFILE="gpt-oss-20b", JB_RUN_MUTATOR_PROFILE="gpt-oss-20b",
+                       JB_JUDGE_PROMPT="rubric",
                        JB_RUN_TARGET_TP="2", JB_RUN_JUDGE_TP="2", JB_RUN_MUTATOR_TP="2")
             run = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, timeout=15)
             self.assertEqual(run.returncode, 0, run.stderr)
@@ -94,10 +95,12 @@ class SharedModelTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             env = {k: v for k, v in os.environ.items() if not k.startswith("JB_")}
             env.update(SLURM_SUBMIT_DIR=str(ROOT), SLURM_JOB_ID="cpu-test", TMPDIR=tmp,
-                       CUDA_VISIBLE_DEVICES="GPU-a,GPU-b,GPU-c,GPU-d")
+                       CUDA_VISIBLE_DEVICES="GPU-a,GPU-b,GPU-c,GPU-d,GPU-e")
             legacy = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
             self.assertEqual(legacy.returncode, 0, legacy.stderr)
-            self.assertIn("GROUPS=GPU-a|GPU-b|GPU-c|GPU-d", legacy.stdout)
+            self.assertIn("GROUPS=GPU-a|GPU-b,GPU-c|GPU-d|GPU-e", legacy.stdout)
+            self.assertIn("prompt=guide", legacy.stdout)
+            self.assertIn("Llama-3.3-70B-Instruct", legacy.stdout)
             env.update(JB_RUN_TARGET_PROFILE="gpt-oss-120b", JB_RUN_JUDGE_PROFILE="llama-3.3-70b",
                        JB_RUN_MUTATOR_PROFILE="devstral-small-2-24b",
                        JB_VLLM_BIN="/fake-serving-env/bin/vllm", JB_CUDA_MODULE="fake-cuda-module",

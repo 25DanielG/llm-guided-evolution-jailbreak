@@ -71,3 +71,5 @@ jailbreak_card_*.md
 
 .ci-venv/
 /run_records/
+/cache/
+/mini_e2e_*/

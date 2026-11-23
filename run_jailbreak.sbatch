@@ -1,17 +1,14 @@
 #!/bin/bash
-# Production topology: 1 GPU target, 1 GPU judge, 1 GPU reporting (HarmBench,
-# verification/audit only), 1 GPU mutator.
+# Production topology: 1 GPU target, 2 GPU Llama 3.3 70B guide judge,
+# 1 GPU reporting (HarmBench, verification/audit only), 1 GPU mutator.
 # Adjust Slurm allocation and groups together if using a different GPU type.
-# Judge override (defaults unchanged): JB_RUN_JUDGE_MODEL, JB_RUN_JUDGE_TP (judge
-# GPUs, default 1), JB_RUN_JUDGE_MAX_LEN (vllm --max-model-len); needs
-# 1 + JB_RUN_JUDGE_TP + 2 GPUs. JB_RUN_MUTATOR_MODEL is independent of the judge.
-# Guide judge on the shared 70B (bf16, 2 x 80GB GPUs; sota/Jailbreak/README.md):
-#   sbatch -N 1 -G 5 -C "A100-80GB|H100|H200" --export=ALL,JB_JUDGE_PROMPT=guide,JB_RUN_JUDGE_MODEL=/storage/ice-shared/vip-vvk/llm_storage/meta-llama/Llama-3.3-70B-Instruct,JB_RUN_JUDGE_TP=2,JB_RUN_JUDGE_MAX_LEN=4096 run_jailbreak.sbatch
+# Override the target with JB_RUN_TARGET_PROFILE or JB_RUN_TARGET_MODEL.
+# The judge defaults to the validated 70B guide setup; see sota/Jailbreak/README.md.
 #SBATCH --job-name=jb_run
 # All four model services communicate over localhost and must share one node.
 #SBATCH -N 1
-#SBATCH -G 4
-#SBATCH -t 4:00:00
+#SBATCH -G 5
+#SBATCH -t 3:00:00
 #SBATCH --mem=192G
 #SBATCH -c 24
 #SBATCH -o jb_run_%j.out
@@ -25,6 +22,8 @@ cd "$SLURM_SUBMIT_DIR"
 if [[ -n "${JB_RUN_TARGET_PROFILE:-}${JB_RUN_JUDGE_PROFILE:-}${JB_RUN_MUTATOR_PROFILE:-}" ]]; then
     : "${JB_VLLM_BIN:?Profiles require the approved shared serving environment bin/vllm}"
     : "${JB_CUDA_MODULE:?Profiles require the CUDA module verified for that environment}"
+fi
+if [[ -n "${JB_CUDA_MODULE:-}" ]]; then
     module load "$JB_CUDA_MODULE"
 else
     module load cuda 2>/dev/null || true
@@ -36,15 +35,18 @@ mkdir -p "$UV_CACHE_DIR"
 # FlashInfer's sampler JIT-compiles with 'ninja' (absent on nodes) -> use native sampler.
 export VLLM_USE_FLASHINFER_SAMPLER=0
 
-TARGET_MODEL="${JB_RUN_TARGET_MODEL:-$HOME/scratch/llm_storage/Mistral-7B-Instruct-v0.2}"
-LLAMA_8B="$HOME/scratch/llm_storage/Llama-3.1-8B-Instruct"
-JUDGE_MODEL="${JB_RUN_JUDGE_MODEL:-$LLAMA_8B}"
-JUDGE_TP="${JB_RUN_JUDGE_TP:-1}"
-JUDGE_MAX_LEN="${JB_RUN_JUDGE_MAX_LEN:-}"
-JUDGE_PROMPT="${JB_JUDGE_PROMPT-rubric}"  # unset -> rubric, same as jb_config.judge_prompt()
+MODEL_ROOT="${JB_RUN_MODEL_ROOT:-$HOME/scratch/llm_storage}"
+TARGET_MODEL="${JB_RUN_TARGET_MODEL:-$MODEL_ROOT/Mistral-7B-Instruct-v0.2}"
+LLAMA_8B="${JB_RUN_LLAMA_8B_MODEL:-$MODEL_ROOT/Llama-3.1-8B-Instruct}"
+LLAMA_70B="/storage/ice-shared/vip-vvk/llm_storage/meta-llama/Llama-3.3-70B-Instruct"
+JUDGE_MODEL="${JB_RUN_JUDGE_MODEL:-$LLAMA_70B}"
+JUDGE_TP="${JB_RUN_JUDGE_TP:-2}"
+JUDGE_MAX_LEN="${JB_RUN_JUDGE_MAX_LEN:-4096}"
+JUDGE_PROMPT="${JB_JUDGE_PROMPT:-guide}"
+export JB_JUDGE_PROMPT="$JUDGE_PROMPT"
 CHECKLIST_OBJECTIVE="${JB_CHECKLIST_OBJECTIVE-0}"  # unset -> 0, same as jb_config.checklist_objective()
 MUTATOR_MODEL="${JB_RUN_MUTATOR_MODEL:-$LLAMA_8B}"
-REPORTING_MODEL="$HOME/scratch/llm_storage/HarmBench-Llama-2-13b-cls"
+REPORTING_MODEL="${JB_RUN_REPORTING_MODEL:-$MODEL_ROOT/HarmBench-Llama-2-13b-cls}"
 # Opt-in registry profiles. Legacy path overrides retain their original behavior.
 TARGET_PROFILE="${JB_RUN_TARGET_PROFILE:-}"
 JUDGE_PROFILE="${JB_RUN_JUDGE_PROFILE:-}"
@@ -108,6 +110,7 @@ case "$BOOTSTRAP" in
         ;;
 esac
 export RUN_ID
+export JB_BEHAVIORS_PATH="${JB_BEHAVIORS_PATH:-$PWD/sota/Jailbreak/behaviors/curated.csv}"
 export JB_BALANCE_TURN_DEPTHS="${JB_BALANCE_TURN_DEPTHS:-1}"
 export JB_STRUCTURAL_TURN_DEPTH_MUTATION="${JB_STRUCTURAL_TURN_DEPTH_MUTATION:-1}"
 echo "Run configuration: run_id=$RUN_ID bootstrap=$BOOTSTRAP selection=$JB_SELECTION "\
@@ -137,8 +140,9 @@ case "$JUDGE_PROMPT" in
     rubric|guide) ;;
     *) echo "ERROR: JB_JUDGE_PROMPT must be rubric or guide, got: '$JUDGE_PROMPT'" >&2; exit 1 ;;
 esac
-if [ "$JUDGE_PROMPT" = guide ] && [ "$JUDGE_MODEL" = "$LLAMA_8B" ]; then
-    echo "WARNING: JB_JUDGE_PROMPT=guide on the default 8B judge; it was validated on the 70B (set JB_RUN_JUDGE_MODEL)" >&2
+if [ "$JUDGE_PROMPT" = guide ] && [ "$JUDGE_MODEL" != "$LLAMA_70B" ] && [ "$JUDGE_PROFILE" != llama-3.3-70b ]; then
+    echo "ERROR: guide judge requires Llama-3.3-70B-Instruct or the llama-3.3-70b profile" >&2
+    exit 1
 fi
 case "$CHECKLIST_OBJECTIVE" in
     0|1) ;;
@@ -150,12 +154,7 @@ fi
 if [ "$CHECKLIST_OBJECTIVE" = 1 ] && [ "$(printf '%s' "$JB_SELECTION" | tr '[:upper:]' '[:lower:]')" != nsga2 ]; then
     echo "WARNING: JB_CHECKLIST_OBJECTIVE=1 only steers parent selection with JB_SELECTION=nsga2 (got $JB_SELECTION)" >&2
 fi
-# Rubric verdict cache keys carry no model identity (served name is always "judge"), so a
-# non-default rubric judge gets its own cache dir instead of reusing the 8B's verdicts.
-if [ "$JUDGE_PROMPT" = rubric ] && [ "$JUDGE_MODEL" != "$LLAMA_8B" ]; then
-    export JB_CACHE_DIR="${JB_CACHE_DIR:-$HOME/scratch/jb_cache}/judge_$(basename "$JUDGE_MODEL")"
-    echo "Non-default rubric judge: verdict + response cache at $JB_CACHE_DIR"
-fi
+# Every run has its own cache; never reuse an 8B verdict or a different judge mode.
 # target, JUDGE_TP judge GPUs, reporting, mutator
 NEED_GPUS=$((TARGET_TP + JUDGE_TP + 1 + MUTATOR_TP))
 IFS=',' read -ra GPU_IDS <<< "$CUDA_VISIBLE_DEVICES"
@@ -213,50 +212,60 @@ cleanup() { for pid in "$TARGET_PID" "$JUDGE_PID" "$REPORTING_PID" "$MUT_PID" "$
     [[ -z "$pid" ]] || kill "$pid" 2>/dev/null || true
  done; }
 trap cleanup EXIT
+# Give concurrent allocations distinct service ports, even on the same node.
+PORT_BASE=$((20000 + (SLURM_JOB_ID % 2000) * 10))
+TARGET_PORT=$((PORT_BASE + 1))
+JUDGE_PORT=$((PORT_BASE + 2))
+REPORTING_PORT=$((PORT_BASE + 3))
+MUTATOR_BACKEND_PORT=$((PORT_BASE + 4))
+MUTATOR_PORT=$((PORT_BASE + 5))
+export JB_TARGET_VLLM_PORT="$TARGET_PORT" JB_JUDGE_VLLM_PORT="$JUDGE_PORT"
+export JB_REPORTING_VLLM_PORT="$REPORTING_PORT" LLMGE_PORT="$MUTATOR_PORT"
+echo "Service ports: target=$TARGET_PORT judge=$JUDGE_PORT reporting=$REPORTING_PORT mutator=$MUTATOR_PORT"
 TARGET_COMMAND=("${JB_VLLM_BIN:-vllm}" serve "$TARGET_MODEL" --served-model-name target
-    --host 0.0.0.0 --port 8001 --gpu-memory-utilization 0.9)
+    --host 0.0.0.0 --port "$TARGET_PORT" --gpu-memory-utilization 0.9)
 if [[ -n "$TARGET_PROFILE" ]]; then
     TARGET_COMMAND=(python3 -m src.model_serving serve --model "$TARGET_PROFILE"
-        --served-name target --port 8001 --max-len "${JB_TARGET_MAX_MODEL_LEN:-4096}" --tp "$TARGET_TP")
+        --served-name target --port "$TARGET_PORT" --max-len "${JB_TARGET_MAX_MODEL_LEN:-4096}" --tp "$TARGET_TP")
 fi
 JUDGE_COMMAND=("${JB_VLLM_BIN:-vllm}" serve "$JUDGE_MODEL" --served-model-name judge
-    --host 0.0.0.0 --port 8002 --gpu-memory-utilization 0.9)
+    --host 0.0.0.0 --port "$JUDGE_PORT" --gpu-memory-utilization 0.9)
 # Preserve the legacy judge arguments without shell evaluation.
 read -ra JUDGE_LEGACY_ARGS <<< "$JUDGE_EXTRA_ARGS"
 JUDGE_COMMAND+=("${JUDGE_LEGACY_ARGS[@]}")
 if [[ -n "$JUDGE_PROFILE" ]]; then
     JUDGE_COMMAND=(python3 -m src.model_serving serve --model "$JUDGE_PROFILE"
-        --served-name judge --port 8002 --max-len "${JUDGE_MAX_LEN:-4096}" --tp "$JUDGE_TP")
+        --served-name judge --port "$JUDGE_PORT" --max-len "${JUDGE_MAX_LEN:-4096}" --tp "$JUDGE_TP")
 fi
 
 # target vLLM (weaker model)
 TARGET_PID=$(start_with_retry "target vLLM" sota/Jailbreak/target_vllm.out \
     env CUDA_VISIBLE_DEVICES="$TARGET_DEV" "${TARGET_COMMAND[@]}") || exit 1
-echo "$HOST:8001" > sota/Jailbreak/target_host.log
-export JB_TARGET_VLLM_URL="http://$HOST:8001/v1"
+echo "$HOST:$TARGET_PORT" > sota/Jailbreak/target_host.log
+export JB_TARGET_VLLM_URL="http://$HOST:$TARGET_PORT/v1"
 
-# judge vLLM (in-loop rubric judge; fitness-relevant)
+# judge vLLM (in-loop guide judge; fitness-relevant)
 JUDGE_PID=$(start_with_retry "judge vLLM" sota/Jailbreak/judge_vllm.out \
     env CUDA_VISIBLE_DEVICES="$JUDGE_DEV" "${JUDGE_COMMAND[@]}") || exit 1
-echo "$HOST:8002" > sota/Jailbreak/judge_host.log
-export JB_JUDGE_VLLM_URL="http://$HOST:8002/v1"
+echo "$HOST:$JUDGE_PORT" > sota/Jailbreak/judge_host.log
+export JB_JUDGE_VLLM_URL="http://$HOST:$JUDGE_PORT/v1"
 export JB_JUDGE_SERVED_NAME=judge
 
 # reporting vLLM (HarmBench classifier; verification/audit only, never fitness)
 REPORTING_PID=$(start_with_retry "reporting vLLM" sota/Jailbreak/reporting_vllm.out \
     env CUDA_VISIBLE_DEVICES="$REPORTING_DEV" "${JB_VLLM_BIN:-vllm}" serve "$REPORTING_MODEL" \
-    --served-model-name "$JB_REPORTING_SERVED_NAME" --host 0.0.0.0 --port 8003 \
+    --served-model-name "$JB_REPORTING_SERVED_NAME" --host 0.0.0.0 --port "$REPORTING_PORT" \
     --gpu-memory-utilization 0.9) || exit 1
-echo "$HOST:8003" > sota/Jailbreak/reporting_host.log
-export JB_REPORTING_VLLM_URL="http://$HOST:8003/v1"
+echo "$HOST:$REPORTING_PORT" > sota/Jailbreak/reporting_host.log
+export JB_REPORTING_VLLM_URL="http://$HOST:$REPORTING_PORT/v1"
 
 export SERVER_HOSTNAME=$HOST
 echo "$HOST" > hostname.log
 if [[ -n "$MUTATOR_PROFILE" ]]; then
     MUT_VLLM_PID=$(start_with_retry "mutator vLLM" mutator_vllm.log \
         env CUDA_VISIBLE_DEVICES="$MUTATOR_DEV" python3 -m src.model_serving serve \
-        --model "$MUTATOR_PROFILE" --port 8004 --max-len "${JB_MUTATOR_MAX_MODEL_LEN:-4096}" --tp "$MUTATOR_TP") || exit 1
-    export JB_MUTATOR_VLLM_URL="http://$HOST:8004/v1"
+        --model "$MUTATOR_PROFILE" --port "$MUTATOR_BACKEND_PORT" --max-len "${JB_MUTATOR_MAX_MODEL_LEN:-4096}" --tp "$MUTATOR_TP") || exit 1
+    export JB_MUTATOR_VLLM_URL="http://$HOST:$MUTATOR_BACKEND_PORT/v1"
     # Proxy startup validates model identity, so wait for its backend first.
     deadline=$((SECONDS + ${JB_SERVER_READY_TIMEOUT:-1200}))
     until curl -sf "$JB_MUTATOR_VLLM_URL/models" >/dev/null; do
@@ -269,7 +278,7 @@ if [[ -n "$MUTATOR_PROFILE" ]]; then
 fi
 MUT_PID=$(start_with_retry "mutator" mutator.log \
     env CUDA_VISIBLE_DEVICES="$MUTATOR_DEV" uv run python -m uvicorn server:app \
-    --host "$HOST" --port 8137) || exit 1
+    --host "$HOST" --port "$MUTATOR_PORT") || exit 1
 
 
 # wait for all four to be ready; fail fast if a server process dies instead of
@@ -286,13 +295,13 @@ wait_or_die() {
     done
 }
 echo "Waiting for target vLLM..."
-wait_or_die "http://$HOST:8001/v1/models" "$TARGET_PID" "target vLLM" sota/Jailbreak/target_vllm.out
+wait_or_die "http://$HOST:$TARGET_PORT/v1/models" "$TARGET_PID" "target vLLM" sota/Jailbreak/target_vllm.out
 echo "Target ready. Waiting for judge vLLM..."
-wait_or_die "http://$HOST:8002/v1/models" "$JUDGE_PID" "judge vLLM" sota/Jailbreak/judge_vllm.out
+wait_or_die "http://$HOST:$JUDGE_PORT/v1/models" "$JUDGE_PID" "judge vLLM" sota/Jailbreak/judge_vllm.out
 echo "Judge ready. Waiting for reporting vLLM..."
-wait_or_die "http://$HOST:8003/v1/models" "$REPORTING_PID" "reporting vLLM" sota/Jailbreak/reporting_vllm.out
+wait_or_die "http://$HOST:$REPORTING_PORT/v1/models" "$REPORTING_PID" "reporting vLLM" sota/Jailbreak/reporting_vllm.out
 echo "Reporting ready. Waiting for mutator..."
-wait_or_die "http://$HOST:8137/" "$MUT_PID" "mutator" mutator.log
+wait_or_die "http://$HOST:$MUTATOR_PORT/" "$MUT_PID" "mutator" mutator.log
 echo "Mutator ready."
 
 SMOKE_ONLY="${JB_SMOKE_ONLY:-0}"
