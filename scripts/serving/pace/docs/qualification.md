@@ -75,3 +75,5 @@ sacct -j 7322241,7322242,7326226,7326308,7326309 \
 ## Group launcher checks
 
 The integrated launcher passed bounded H100 text checks for the Inkling lane in job `7327588` and the stable Lightning lane in job `7327589`. Both used the previously verified snapshots, rejected anonymous API requests, accepted the generated per-job key on the kernel-assigned port, checked the GPU worker policy and shut down after validation.
+
+The complete ordinary LLMGE regression command passed in CPU-only job `7327780`. It ran 20 PACE unit tests and 310 LLMGE tests. The existing selectors excluded 22 opt-in live, GPU or dataset cases.
