@@ -8,6 +8,8 @@ export LLM_SERVER_READY_TIMEOUT=0 LLM_SERVER_READY_CHECK_INTERVAL=0
 export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 USE_TF=0 USE_TORCH=1
 export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1
 export PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
+pace=scripts/serving/pace
+PYTHONPATH="$PWD/$pace" "$CI_PYTHON" -B -m unittest discover -s "$pace/tests"
 mkdir -p tests/results
 # Bound the test command independently of dependency installation.
 timeout --kill-after=10s 10m "$CI_PYTHON" -m pytest tests --strict-markers \

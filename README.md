@@ -81,3 +81,7 @@ Read the white-paper below:
   </a>
 </p>
 <br>
+
+## PACE ICE inference
+
+See the [PACE serving guide](scripts/serving/pace/README.md) for independently deploying the guarded Inkling, Nemotron and Muse profiles and connecting them to existing LLMGE clients.

@@ -1,0 +1,50 @@
+{
+  "README.md": {
+    "bytes": 54898,
+    "git_blob": "ac13fa5b55facef9264eaac7f54a821ced849262"
+  },
+  "chat_template.jinja": {
+    "bytes": 6868,
+    "git_blob": "cae99e08917fe3d9ff21551a7c9a835981c69032"
+  },
+  "config.json": {
+    "bytes": 2722,
+    "git_blob": "e6c170c3fb666c50e3b509493b6b7a8f948b7d15"
+  },
+  "generation_config.json": {
+    "bytes": 98,
+    "git_blob": "1b5d49d129001d2be58c2f254bfae3221eab6d96"
+  },
+  "hf_quant_config.json": {
+    "bytes": 67924,
+    "git_blob": "ec915fa4d2b07bfe26240f71e981d34778022baf"
+  },
+  "model-00001-of-00001.safetensors": {
+    "bytes": 19526019168,
+    "sha256": "65e60f51aa1284d4fb022584908c315270334d991828bb774af60584523539d1"
+  },
+  "model.safetensors.index.json": {
+    "bytes": 109300,
+    "git_blob": "3b835a38066039133931b604a0734dfae89a644e"
+  },
+  "processor_config.json": {
+    "bytes": 461,
+    "git_blob": "0e6df76a75a15f8af795dc08346dad6741f6421e"
+  },
+  "special_tokens_map.json": {
+    "bytes": 529,
+    "git_blob": "e4fe9735b528be1c630eb832d655fc8c4c2c309f"
+  },
+  "tiktoken/tokenizer.model": {
+    "bytes": 3386494,
+    "sha256": "f170372dd655728909228220d77cf6b8104a59f38a91262a7d2c4027906ec0d8"
+  },
+  "tokenizer.json": {
+    "bytes": 26178678,
+    "sha256": "7f332727f9a3f093dd452a39cc978e6757627e5dad1b0673aa4e75174f236dd6"
+  },
+  "tokenizer_config.json": {
+    "bytes": 13235,
+    "git_blob": "abf8fb60451e6c33d2cfa3c4dfab9f8c1e7516aa"
+  }
+}

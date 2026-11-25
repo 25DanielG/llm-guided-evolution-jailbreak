@@ -1,0 +1,2 @@
+vllm @ https://wheels.vllm.ai/94b13b3d84562054f089e709ba1e32cf9a153bb7/vllm-0.34.1rc1.dev144%2Bg94b13b3d8-cp38-abi3-manylinux_2_28_x86_64.whl
+torch==2.14.0+cu132
