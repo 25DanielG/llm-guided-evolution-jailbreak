@@ -125,7 +125,7 @@ Point the existing application at the proxy's local port. Stop the proxy and tun
 "$PACE_PYTHON" -B "$PACE_DIR/pace_inference.py" evict muse --confirm
 ```
 
-`fetch` checks Lustre user quota, filesystem headroom and inodes, then downloads only the manifest entries. The manager verifies SHA-256 or Git blob digests before publishing a snapshot. `--partial` targets an interrupted download. Eviction is limited to the chosen revision and uses the same lock as shared snapshot staging. Separate state directories isolate users and deployments.
+`fetch` checks Lustre user quota, filesystem headroom and inodes, then downloads only the manifest entries. The manager verifies SHA-256 or Git blob digests before publishing a snapshot and checks the node-local copy against the same digests before serving. `--partial` targets an interrupted download. Eviction is limited to the chosen revision and uses the same lock as shared snapshot staging. Separate state directories isolate users and deployments.
 
 ## Backend restrictions
 

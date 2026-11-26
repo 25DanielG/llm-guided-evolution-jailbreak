@@ -60,35 +60,59 @@ def completion(base, payload):
     return reply, time.monotonic() - start
 
 
+def stream_statistics(lines, started, now, *, require_token_ids=True):
+    usage = {}
+    first = last = None
+    first_count = received = 0
+    for line in lines:
+        if not line.startswith(b'data: '):
+            continue
+        data = line[6:].strip()
+        if data == b'[DONE]':
+            break
+        event = json.loads(data)
+        usage = event.get('usage') or usage
+        count = sum(len(choice.get('token_ids') or ()) for choice in event.get('choices', ()))
+        if count:
+            last = now()
+            received += count
+            if first is None:
+                first, first_count = last, count
+    elapsed = now() - started
+    tokens = usage.get('completion_tokens', 0)
+    complete = first is not None and received == tokens
+    decode_s = last - first if complete and last > first else None
+    if tokens <= 0 or elapsed <= 0 or (require_token_ids and decode_s is None):
+        raise ValueError(f'Incomplete SSE token accounting: observed {received}, usage {usage}')
+    reasoning = (usage.get('completion_tokens_details') or {}).get('reasoning_tokens')
+    return {'elapsed_s': elapsed, 'ttft_s': first - started if complete else None,
+            'decode_s': decode_s, 'completion_tokens': tokens, 'prompt_tokens': usage.get('prompt_tokens'),
+            'reasoning_tokens': reasoning,
+            'other_completion_tokens': tokens - reasoning if reasoning is not None else None,
+            'first_chunk_tokens': first_count if complete else None,
+            'decode_tok_s': (tokens - first_count) / decode_s if decode_s is not None else None,
+            'e2e_tok_s': tokens / elapsed}
+
+
 def streaming_benchmark(base, payload):
-    payload.update(stream=True, stream_options={'include_usage': True})
-    request = Request(base + '/v1/chat/completions', data=json.dumps(payload).encode(),
+    data = dict(payload, stream=True, return_token_ids=True, stream_options={'include_usage': True})
+    request = Request(base + '/v1/chat/completions', data=json.dumps(data).encode(),
                       headers={'Content-Type': 'application/json'})
-    tokens = first = last = None
     start = time.monotonic()
     with api_open(request, timeout=240) as response:
-        for line in response:
-            if not line.startswith(b'data: '):
-                continue
-            data = line[6:].strip()
-            if data == b'[DONE]':
-                break
-            event = json.loads(data)
-            if event.get('usage'):
-                tokens = event['usage']['completion_tokens']
-            for choice in event.get('choices', []):
-                delta = choice['delta']
-                if delta.get('content') or delta.get('reasoning') or delta.get('reasoning_content'):
-                    last = time.monotonic()
-                    if first is None:
-                        first = last
-    elapsed = time.monotonic() - start
-    if not tokens or first is None:
-        raise ValueError('Streaming benchmark returned no tokens or usage')
-    return {'seconds': round(elapsed, 3), 'completion_tokens': tokens,
-            'end_to_end_tokens_per_second': round(tokens / elapsed, 2),
-            'first_token_seconds': round(first - start, 3),
-            'generation_tokens_per_second': round((tokens - 1) / (last - first), 2) if last > first else None}
+        stats = stream_statistics(response, start, time.monotonic, require_token_ids=False)
+    ttft = stats['ttft_s']
+    decode = stats['decode_tok_s']
+    return {'seconds': round(stats['elapsed_s'], 3), 'completion_tokens': stats['completion_tokens'],
+            'end_to_end_tokens_per_second': round(stats['e2e_tok_s'], 2),
+            'first_token_seconds': round(ttft, 3) if ttft is not None else None,
+            'generation_tokens_per_second': round(decode, 2) if decode is not None else None}
+
+
+def answer_matches(choice, expected):
+    message = choice['message']
+    return (choice['finish_reason'] == 'stop' and not message.get('tool_calls')
+            and re.search(expected, message.get('content') or '', re.IGNORECASE) is not None)
 
 
 def qualification_suite(base, model, video):
@@ -128,12 +152,11 @@ def qualification_suite(base, model, video):
             reasoning = message.get('reasoning') or message.get('reasoning_content') or ''
             calls = message.get('tool_calls') or []
             if name == 'tools':
-                passed = (len(calls) == 1 and calls[0]['function']['name'] == spec['tool']['function']['name']
+                passed = (choice['finish_reason'] == 'tool_calls' and len(calls) == 1
+                          and calls[0]['function']['name'] == spec['tool']['function']['name']
                           and json.loads(calls[0]['function']['arguments']) == spec['expected'])
             else:
-                passed = bool(re.search(spec['expected'], answer, re.IGNORECASE))
-                if name == 'reasoning':
-                    passed = passed and bool(reasoning.strip())
+                passed = answer_matches(choice, spec['expected']) and (name != 'reasoning' or bool(reasoning.strip()))
             results[name] = {'passed': passed, 'answer': answer, 'reasoning_chars': len(reasoning),
                              'tool_calls': calls, 'finish_reason': choice['finish_reason'],
                              'seconds': round(elapsed, 3)}
@@ -218,8 +241,8 @@ def main():
                'temperature': 0, 'max_tokens': 512, 'stream': False}
     response, elapsed = completion(base, payload)
     reply = response['choices'][0]
-    answer = reply['message']['content'] or ''
-    passed = re.search(fixture['expected'], answer, re.IGNORECASE) is not None
+    answer = reply['message'].get('content') or ''
+    passed = answer_matches(reply, fixture['expected'])
     result = {'passed': passed, 'model': model, 'mode': mode, 'answer': answer,
               'finish_reason': reply['finish_reason'], 'ready_seconds': round(ready - start, 2),
               'request_seconds': round(elapsed, 2), 'backends': workers}

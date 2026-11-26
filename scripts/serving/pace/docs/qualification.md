@@ -45,11 +45,11 @@ Super VL loaded the native `NemotronH_Nano_VL_V2` implementation. Its worker ver
 
 ## Measurement definitions
 
-Readiness runs from server launch to the first successful health response. It includes checkpoint staging and excludes batch CUDA preflight. Cold startup can include local JIT builds and Lustre metadata reads. Super VL staging via `node-fetch` includes transfer and checksum verification. Shared staging measures the local copy from a checksum-verified snapshot.
+Readiness runs from server launch to the first successful health response. It includes checkpoint staging and excludes batch CUDA preflight. Cold startup can include local JIT builds and Lustre metadata reads. Super VL staging via `node-fetch` includes transfer and checksum verification. The historical shared staging results measure the local copy from a checksum-verified snapshot. Current shared staging includes rechecking the node-local copy against the pinned digests.
 
 Model-load memory is the worker-reported device footprint of loading the model. The GPU peak comes from one-second NVML samples of GPU worker processes and includes allocator reservation, cache and transient work. The host peak is Slurm batch `MaxRSS`. vLLM reports committed KV cache after warmup and estimated KV capacity when using an extensible cache. These describe different metrics.
 
-The text benchmark asks the model to list integers at temperature zero with a 256-token cap. The stable suite measures end-to-end throughput, time to the first streamed token or reasoning delta and generation throughput between the first and last delta. Historical Inkling results include end-to-end throughput. The benchmarks use one concurrent sequence at a 4,096-token context in eager mode with speculation disabled.
+The text benchmark asks the model to list integers at temperature zero with a 256-token cap. The stable results in the table used text and reasoning deltas to estimate generation throughput. The current suite measures time to the first streamed token ID and computes decode throughput from the subsequent token IDs after reconciling the full stream with server-reported usage. A stream with unavailable or inconsistent IDs reports only end-to-end throughput. Historical Inkling results include end-to-end throughput. The benchmarks use one concurrent sequence at a 4,096-token context in eager mode with speculation disabled. The suite requires a normal stop for answer fixtures and a tool-call finish for the tool fixture.
 
 ## Operational findings
 

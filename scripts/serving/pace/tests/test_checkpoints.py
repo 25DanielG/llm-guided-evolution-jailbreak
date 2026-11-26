@@ -1,4 +1,5 @@
 import hashlib
+import json
 import os
 import sys
 import tempfile
@@ -6,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from pace_inference import assert_managed, fetch, model_profile, verify
+from pace_inference import assert_managed, fetch, model_profile, stage_snapshot, verify
 from validate import red_png
 
 
@@ -49,6 +50,25 @@ class CheckpointTests(unittest.TestCase):
             (root / 'linked').symlink_to('content')
             with self.assertRaisesRegex(ValueError, 'linked'):
                 verify(root, {'linked': {'bytes': 1}})
+
+    def test_stage_rejects_same_size_cache_corruption_before_serving(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            snapshot = root / 'snapshot'
+            snapshot.mkdir()
+            metadata = {'repo': 'example/test', 'revision': '1' * 40}
+            (snapshot / '.pace-snapshot.json').write_text(json.dumps(metadata))
+            weights = snapshot / 'model.safetensors'
+            weights.write_bytes(b'original')
+            profile = dict(metadata, files={'model.safetensors': {
+                'bytes': 8, 'sha256': hashlib.sha256(b'original').hexdigest(),
+            }})
+            with patch('pace_inference.check_local_disk'):
+                staged = stage_snapshot(root, snapshot, profile, root / 'good')
+                self.assertEqual((staged / weights.name).read_bytes(), b'original')
+                weights.write_bytes(b'changed!')
+                with self.assertRaisesRegex(ValueError, 'Checksum mismatch'):
+                    stage_snapshot(root, snapshot, profile, root / 'corrupt')
 
     def test_fetch_publishes_only_verified_files(self):
         with tempfile.TemporaryDirectory() as directory:

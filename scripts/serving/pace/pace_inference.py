@@ -193,7 +193,7 @@ def stage_snapshot(root, snapshot, profile, job_dir):
             target = local / name
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(snapshot / name, target)
-        verify(local, profile['files'])
+        verify(local, profile['files'], digest=True)
     return local
 
 
@@ -325,7 +325,7 @@ def serve(root, snapshot, profile, args):
                '--max-model-len', '4096', *execution_flags,
                '--tensor-parallel-size', str(args.tp), *flags, *model_flags, *backend_flags(args.model)]
     print(f'Local snapshot {local} staged in {time.monotonic() - stage_started:.2f} seconds'
-          f' ({"download and checksum" if args.node_fetch else "shared copy"})', flush=True)
+          f' ({"download and checksum" if args.node_fetch else "shared copy and checksum"})', flush=True)
     os.execve(command[0], command, env)
 
 

@@ -19,7 +19,7 @@ from urllib.request import Request
 
 from managed_job import await_endpoint, child_process, stop
 from pace_inference import SOURCE, cache_root, model_profile, reviewed_runtime
-from validate import api_open, checked_backends, completion, process_peak, red_png, serving_metrics
+from validate import api_open, checked_backends, completion, process_peak, red_png, serving_metrics, stream_statistics
 
 
 PROMPT = 'List the integers from 1 to 300, separated by commas. Give only the list.'
@@ -43,38 +43,6 @@ def payload(content, effort='none', tokens=256):
     return {'model': 'inkling', 'messages': [{'role': 'user', 'content': content}],
             'temperature': 0, 'max_tokens': tokens, 'reasoning_effort': effort,
             'seed': 142}
-
-
-def stream_statistics(lines, started, now):
-    usage = None
-    first = last = None
-    first_count = received = 0
-    for line in lines:
-        if not line.startswith(b'data: '):
-            continue
-        data = line[6:].strip()
-        if data == b'[DONE]':
-            break
-        event = json.loads(data)
-        usage = event.get('usage') or usage
-        count = sum(len(choice.get('token_ids') or ()) for choice in event.get('choices', ()))
-        if count:
-            last = now()
-            received += count
-            if first is None:
-                first, first_count = last, count
-    elapsed = now() - started
-    if not usage or usage['completion_tokens'] != received or first is None or last <= first:
-        raise ValueError(f'Incomplete SSE token accounting: observed {received}, usage {usage}')
-    details = usage.get('completion_tokens_details') or {}
-    reasoning = details.get('reasoning_tokens')
-    return {'elapsed_s': elapsed, 'ttft_s': first - started, 'decode_s': last - first,
-            'completion_tokens': received, 'prompt_tokens': usage['prompt_tokens'],
-            'reasoning_tokens': reasoning,
-            'other_completion_tokens': received - reasoning if reasoning is not None else None,
-            'first_chunk_tokens': first_count,
-            'decode_tok_s': (received - first_count) / (last - first),
-            'e2e_tok_s': received / elapsed}
 
 
 def stream_request(base, prompt, tokens=256):

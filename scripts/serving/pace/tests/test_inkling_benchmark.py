@@ -1,7 +1,8 @@
 import json
 import unittest
 
-from inkling_benchmark import metrics_delta, parse_metrics, stream_statistics
+from inkling_benchmark import metrics_delta, parse_metrics
+from validate import stream_statistics
 
 
 def events(*data):
