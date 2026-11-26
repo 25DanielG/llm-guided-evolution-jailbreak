@@ -4,6 +4,8 @@ The guarded launcher serves Inkling 2 Mini, Nemotron 3.5 Lightning, Muse Glimmer
 
 See the [ICE qualification report](docs/qualification.md) for exact checkpoint revisions, runtime pins and GPU measurements.
 
+The [Inkling performance report](docs/inkling-performance.md) documents the opt-in Hopper decode graph profile and its measurements. The original eager path remains the default.
+
 ## Prepare your checkout and account
 
 ```bash

@@ -240,6 +240,8 @@ def serve(root, snapshot, profile, args):
         raise ValueError(f'{args.model} is text-only')
     if args.mode == 'suite' and profile['runtime'] != 'stable':
         raise ValueError('Use separate text and image tests for Inkling')
+    if args.inkling_execution and args.model != 'inkling':
+        raise ValueError('The execution comparison is specific to Inkling')
     key_file = Path(os.environ['PACE_SERVER_KEY_FILE'])
     key_stat = key_file.lstat()
     if not stat.S_ISREG(key_stat.st_mode) or key_stat.st_uid != os.getuid() or key_stat.st_mode & 0o077:
@@ -278,6 +280,26 @@ def serve(root, snapshot, profile, args):
     if profile.get('image'):
         flags += ['--mm-encoder-attn-backend', 'FLASH_ATTN']
     env = guarded_environment(SOURCE, job_dir / 'cache', runtime=runtime, cuda_toolkit=toolkit)
+    env.pop('PACE_INKLING_EXECUTION', None)
+    execution_flags = ['--max-num-seqs', '1', '--enforce-eager']
+    if args.inkling_execution:
+        execution_flags = ['--max-num-seqs', str(args.inkling_batch), '--no-enable-prefix-caching']
+        env['PACE_INKLING_EXECUTION'] = args.inkling_execution
+        # Humming has its own defaults outside XDG_CACHE_HOME. Separate
+        # concurrent node experiments and use the wheel's matching NVRTC.
+        env['HUMMING_CACHE_DIR'] = str(job_dir / 'cache/humming')
+        env['HUMMING_TMP_DIR'] = str(job_dir / 'cache/humming-tmp')
+        env['LD_LIBRARY_PATH'] = str(Path(env['CUDA_HOME']) / 'lib')
+        if args.inkling_execution.endswith('-nonbreakable'):
+            env['VLLM_USE_BREAKABLE_CUDAGRAPH'] = '0'
+        if args.inkling_execution == 'eager':
+            execution_flags += ['--enforce-eager']
+        else:
+            compilation = {'mode': 3 if args.inkling_execution.startswith('compile') else 0,
+                           'cudagraph_mode': 'FULL_DECODE_ONLY',
+                           'decode_cudagraph_capture_request_sizes': (
+                               [1] if args.inkling_batch == 1 else [1, 2, 4])}
+            execution_flags += ['--compilation-config', json.dumps(compilation)]
     # vLLM reads its key from the environment so the key stays out of
     # generated command lines and non-default argument logs.
     env['VLLM_API_KEY'] = token
@@ -300,7 +322,7 @@ def serve(root, snapshot, profile, args):
         env['HUMMING_CACHE_DIR'] = str(job_dir / 'cache/humming')
     command = [str(runtime / 'bin' / 'vllm'), 'serve', str(local), '--host', '127.0.0.1',
                '--port', str(args.port), '--served-model-name', args.model,
-               '--max-model-len', '4096', '--max-num-seqs', '1', '--enforce-eager',
+               '--max-model-len', '4096', *execution_flags,
                '--tensor-parallel-size', str(args.tp), *flags, *model_flags, *backend_flags(args.model)]
     print(f'Local snapshot {local} staged in {time.monotonic() - stage_started:.2f} seconds'
           f' ({"download and checksum" if args.node_fetch else "shared copy"})', flush=True)
@@ -318,6 +340,9 @@ def main():
                         help='Fetch a public pinned snapshot directly to allocated node-local disk')
     parser.add_argument('--port', type=int, choices=range(65536), metavar='0-65535', default=0)
     parser.add_argument('--tp', type=int, choices=[1, 2], default=1)
+    parser.add_argument('--inkling-execution',
+                        choices=['eager', 'graph', 'compile', 'graph-nonbreakable', 'compile-nonbreakable'])
+    parser.add_argument('--inkling-batch', type=int, choices=[1, 4], default=1)
     args = parser.parse_args()
     profile = model_profile(args.model)
     root = cache_root()

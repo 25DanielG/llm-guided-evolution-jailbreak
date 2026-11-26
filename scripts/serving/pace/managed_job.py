@@ -97,6 +97,8 @@ def run(args):
                       args.model, '--mode', args.mode, '--tp', str(args.tp), '--port', str(args.port)]
     if args.node_fetch:
         server_command.append('--node-fetch')
+    if args.inkling_graph:
+        server_command.extend(('--inkling-execution', 'graph'))
     gpu_output = args.output / 'gpu-process-samples.csv'
     sampler = ['nvidia-smi', '--query-compute-apps=gpu_uuid,pid,used_gpu_memory',
                '--format=csv,noheader,nounits', '--loop=1']
@@ -142,6 +144,7 @@ def main():
     parser.add_argument('port', type=int)
     parser.add_argument('output', type=Path)
     parser.add_argument('--node-fetch', action='store_true')
+    parser.add_argument('--inkling-graph', action='store_true')
     args = parser.parse_args()
     os.umask(0o077)
     for signum in (signal.SIGTERM, signal.SIGINT):

@@ -68,7 +68,8 @@ class PortabilityTests(unittest.TestCase):
     def test_slurm_overrides_and_scheduler_defaults(self):
         args = SimpleNamespace(model='super-vl', gpu=None, operation='validate', mode=None, tp=1,
                                time=None, tmp=None, mem=None, account=None, partition=None,
-                               qos=None, exclude=None, port=0, test_only=False, source=None)
+                               qos=None, exclude=None, port=0, test_only=False, source=None,
+                               inkling_graph=False)
         command = slurm_command(args, Path('/a path with spaces'))
         self.assertIn('--gres=gpu:h200:1', command)
         self.assertIn('--mem=128G', command)
@@ -88,6 +89,11 @@ class PortabilityTests(unittest.TestCase):
                      '--gres=gpu:h100:2', '--output=/a path with spaces/slurm-super-vl-%j.out'):
             self.assertIn(flag, command)
         self.assertEqual(command[-6:], ['image', '2', 'shared', 'H100', 'serve', '20991'])
+        args.inkling_graph = True
+        with self.assertRaisesRegex(ValueError, 'specific to Inkling'):
+            slurm_command(args, Path('/a path with spaces'))
+        args.model, args.tp = 'inkling', 1
+        self.assertEqual(slurm_command(args, Path('/a path with spaces'))[-1], 'inkling-graph')
 
     def test_listener_filters_by_pid_socket_and_ipv4_loopback(self):
         with tempfile.TemporaryDirectory() as temp:

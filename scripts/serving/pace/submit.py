@@ -17,6 +17,8 @@ def slurm_command(args, root):
     mode = args.mode or (allocation['validation'] if args.operation == 'validate' else serve_mode)
     if args.tp == 2 and (args.model != 'super-vl' or gpu != 'h100'):
         raise ValueError('TP2 is configured only for Super VL on H100')
+    if args.inkling_graph and args.model != 'inkling':
+        raise ValueError('--inkling-graph is specific to Inkling')
     if (mode == 'image' and not profile['image']) or (mode == 'suite' and profile['runtime'] != 'stable'):
         raise ValueError(f'{args.model} does not support mode {mode}')
     flags = ['sbatch', '--parsable', '--export=ALL', f'--gres=gpu:{gpu}:{args.tp}',
@@ -30,7 +32,7 @@ def slurm_command(args, root):
         flags.append('--test-only')
     return flags + [str(SOURCE / 'slurm/validate.sbatch'), str(SOURCE), args.model,
                     mode, str(args.tp), args.source or allocation['source'], gpu.upper(),
-                    args.operation, str(args.port)]
+                    args.operation, str(args.port)] + (['inkling-graph'] if args.inkling_graph else [])
 
 
 def main():
@@ -41,6 +43,8 @@ def main():
     parser.add_argument('--operation', choices=['validate', 'serve'], default='validate')
     parser.add_argument('--mode', choices=['text', 'image', 'suite'])
     parser.add_argument('--source', choices=['shared', 'node-fetch'])
+    parser.add_argument('--inkling-graph', action='store_true',
+                        help='Opt in to single-sequence Inkling decode graph capture')
     parser.add_argument('--gpu', choices=['h100', 'h200'])
     parser.add_argument('--tp', type=int, choices=[1, 2], default=1)
     parser.add_argument('--port', type=int, choices=range(65536), metavar='0-65535', default=0,

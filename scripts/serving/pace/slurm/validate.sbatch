@@ -16,6 +16,7 @@ source_mode=${5:-shared}
 gpu_family=${6:-}
 operation=${7:-validate}
 port=${8:-0}
+execution=${9:-}
 : "${PACE_INFERENCE_STATE:?Set the external state directory before submission}"
 python=${PACE_PYTHON:-python3}
 unset HF_TOKEN HUGGING_FACE_HUB_TOKEN HUGGINGFACEHUB_API_TOKEN
@@ -23,6 +24,11 @@ case "$source_mode" in
   shared) fetch_flags=() ;;
   node-fetch) fetch_flags=(--node-fetch) ;;
   *) echo "Unknown checkpoint source $source_mode" >&2; exit 2 ;;
+esac
+case "$execution" in
+  '') ;;
+  inkling-graph) fetch_flags+=(--inkling-graph) ;;
+  *) echo "Unknown execution profile $execution" >&2; exit 2 ;;
 esac
 export PACE_EXPECTED_GPU_FAMILY="$gpu_family"
 export PACE_EXPECTED_GPUS="$tp"

@@ -1,6 +1,7 @@
 """Verify actual model backends before vLLM profiles or serves the model."""
 
 from collections import Counter
+import os
 
 import torch
 from vllm import envs
@@ -54,3 +55,21 @@ class Worker(UpstreamWorker):
             raise ValueError('Could not verify the Hopper vision layers')
         emit('worker_backends_verified', rank=self.rank, selected=dict(counts),
              vision_enabled=not mm.language_model_only, deep_gemm=False, flashmla=False)
+
+    def compile_or_warm_up_model(self):
+        result = super().compile_or_warm_up_model()
+        profile = os.environ.get('PACE_INKLING_EXECUTION')
+        if profile is not None:
+            verify_process()
+            config = self.vllm_config.compilation_config
+            graph = config.cudagraph_mode.name
+            expected = 'NONE' if profile == 'eager' else 'FULL_DECODE_ONLY'
+            expected_mode = 3 if profile.startswith('compile') else 0
+            if (graph != expected or config.mode.value != expected_mode
+                    or (profile.endswith('-nonbreakable') and config.use_breakable_cudagraph)):
+                raise ValueError(f'Inkling execution profile changed during startup: {graph}, {config.mode}')
+            emit('inkling_execution_verified', rank=self.rank, graph=graph,
+                 compilation=config.mode.name, breakable=config.use_breakable_cudagraph,
+                 sampler='vllm-baseline',
+                 speculative=self.vllm_config.speculative_config is not None)
+        return result
