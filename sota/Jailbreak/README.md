@@ -214,9 +214,11 @@ specific, delivered (`CHECKLIST_QUESTIONS` in `judge.py`, verbatim from the scor
 in `judge_v2_bakeoff.py` on `neel/reporting-judge`). Each request continues `{"answer": "`
 for one token, P(yes) comes from the top-20 logprobs, and the score is the geometric mean
 of the four, each floored at 1e-12 so that one P(yes) of 0 doesn't erase the other three.
-On 195 hand-labeled responses (Llama-3.3-70B), this score ranked real full successes
-above the rest better than the guide's P(full): ROC AUC .93 vs .85, and .93 vs .78 on
-the run that was evolved against the guide judge.
+On 195 hand-labeled responses, scored through this exact code against a live Llama-3.3-70B
+judge server on PACE (11/20), this score ranked real full successes above the rest better
+than the guide's P(full): ROC AUC .92 vs .86, and .93 vs .77 on the run that was evolved
+against the guide judge. Each P(yes) matched the offline bake-off to 6 decimals, with 0
+parse failures.
 
 - `results/<gene_id>_results.csv` gets `checklist_score` as its 4th column, and
   `FITNESS_WEIGHTS` becomes `(1.0, 1.0, -1.0, 1.0)`. With the flag off, both are unchanged.
