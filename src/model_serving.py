@@ -86,6 +86,10 @@ def check_legacy_launch_source(source):
                 raise ValueError(error)
             break
 
+    for alias, item in json.loads(PACE_REGISTRY.read_text()).items():
+        if item["runtime"] == "inkling" and source in (alias, item["repo"]):
+            raise ValueError(guarded_launcher_message(source))
+
     # A raw path can point to Inkling under a different directory or symlink.
     # Stock and Unbound share this guarded architecture and checkpoint config.
     try:

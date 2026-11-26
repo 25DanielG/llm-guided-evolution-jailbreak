@@ -20,8 +20,9 @@ registry integration has CPU coverage and status `configured`. Unbound requires
 the qualified guarded PACE launcher, whose worker verifies the kernel policy
 and readiness. `src.model_serving serve`, `serve_model.sbatch` and the combined
 launcher reject Unbound before hashing weights or starting a service. The raw
-checkpoint launchers also reject local `inkling2_loop` checkpoints, including
-paths that reach them through symlinks.
+checkpoint launchers also reject stock Inkling by its PACE alias `inkling` or
+repository ID `thinkingmachines/Inkling-2-Mini`. They reject local
+`inkling2_loop` checkpoints, including paths that reach them through symlinks.
 
 Use `src.model_serving list`, `path`, `tp` and `check` for registry inspection
 and checkpoint verification. For Unbound, `src.model_serving command` prints

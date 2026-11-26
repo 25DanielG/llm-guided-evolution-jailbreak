@@ -81,6 +81,40 @@ class SharedModelTests(unittest.TestCase):
         self.assertIn("qualified guarded PACE Inkling launcher", run.stderr)
         self.assertNotIn("Endpoint:", run.stdout)
 
+    def test_legacy_launch_check_rejects_stock_and_unbound_identifiers(self):
+        for source in ("inkling", "thinkingmachines/Inkling-2-Mini", "inkling-2-mini-unbound-v21",
+                       "nokeepai/Inkling-2-Mini-Unbound", "inkling-unbound-v21"):
+            with self.subTest(source=source), self.assertRaisesRegex(
+                ValueError, "qualified guarded PACE Inkling launcher"
+            ):
+                model_serving.check_legacy_launch_source(source)
+
+    def test_legacy_launch_check_rejects_local_inkling_checkpoints_and_symlinks(self):
+        with tempfile.TemporaryDirectory() as temp:
+            for name in ("stock", "unbound"):
+                checkpoint = Path(temp) / name
+                checkpoint.mkdir()
+                (checkpoint / "config.json").write_text('{"model_type":"inkling2_loop"}')
+                link = Path(temp) / f"{name}-link"
+                link.symlink_to(checkpoint, target_is_directory=True)
+                for source in (checkpoint, link):
+                    with self.subTest(source=source), self.assertRaisesRegex(
+                        ValueError, "qualified guarded PACE Inkling launcher"
+                    ):
+                        model_serving.check_legacy_launch_source(str(source))
+
+    def test_legacy_launch_check_accepts_other_model_identifiers(self):
+        for name in ("gpt-oss-20b", "gpt-oss-120b", "llama-3.3-70b", "mistral-7b", "devstral-small-2-24b"):
+            for source in (name, model_serving.profile(name)["model_id"]):
+                with self.subTest(source=source):
+                    model_serving.check_legacy_launch_source(source)
+
+        pace = json.loads(model_serving.PACE_REGISTRY.read_text())
+        for name in ("lightning", "muse", "super-vl"):
+            for source in (name, pace[name]["repo"]):
+                with self.subTest(source=source):
+                    model_serving.check_legacy_launch_source(source)
+
     def test_generic_wrappers_reject_guarded_raw_model_sources(self):
         with tempfile.TemporaryDirectory() as temp:
             checkpoint = Path(temp) / "checkpoint"
@@ -88,13 +122,23 @@ class SharedModelTests(unittest.TestCase):
             (checkpoint / "config.json").write_text('{"model_type":"inkling2_loop"}')
             link = Path(temp) / "local-alias"
             link.symlink_to(checkpoint, target_is_directory=True)
+            launch_marker = Path(temp) / "vllm-started"
+            fake_vllm = Path(temp) / "fake-vllm"
+            fake_vllm.write_text('#!/bin/sh\ntouch "$LAUNCH_MARKER"\n')
+            fake_vllm.chmod(0o755)
             env = {k: v for k, v in os.environ.items() if not k.startswith("JB_")}
-            env.update(SLURM_SUBMIT_DIR=str(ROOT), TMPDIR=temp, REAL_PYTHON=sys.executable)
-            prefix = 'python3() { "$REAL_PYTHON" "$@"; }; module() { exit 91; }; source "$1"'
+            env.update(SLURM_SUBMIT_DIR=str(ROOT), TMPDIR=temp, REAL_PYTHON=sys.executable,
+                       JB_VLLM_BIN=str(fake_vllm), LAUNCH_MARKER=str(launch_marker))
+            prefix = ('python3() { "$REAL_PYTHON" "$@"; }; '
+                      'module() { echo "unexpected module load" >&2; exit 91; }; source "$1"')
             cases = [
                 ("run_jailbreak.sbatch", {"JB_RUN_MUTATOR_PROFILE": "inkling-2-mini-unbound-v21"}),
                 ("run_jailbreak.sbatch", {"JB_RUN_TARGET_MODEL": "nokeepai/Inkling-2-Mini-Unbound"}),
+                ("run_jailbreak.sbatch", {"JB_RUN_TARGET_MODEL": "thinkingmachines/Inkling-2-Mini"}),
+                ("run_jailbreak.sbatch", {"JB_RUN_JUDGE_MODEL": "inkling"}),
                 ("run_jailbreak.sbatch", {"JB_RUN_JUDGE_MODEL": str(link)}),
+                ("sota/Jailbreak/serve_vllm.sh", {"JB_TARGET_MODEL_PATH": "thinkingmachines/Inkling-2-Mini"}),
+                ("sota/Jailbreak/serve_vllm.sh", {"JB_TARGET_MODEL_PATH": "inkling"}),
                 ("sota/Jailbreak/serve_vllm.sh", {"JB_REPORTING_MODEL_PATH": link.name,
                                                 "JB_TARGET_MODEL_PATH": str(Path(temp) / "missing")}),
             ]
@@ -105,6 +149,8 @@ class SharedModelTests(unittest.TestCase):
                                          text=True, timeout=10)
                     self.assertEqual(run.returncode, 2, run.stderr)
                     self.assertIn("qualified guarded PACE Inkling launcher", run.stderr)
+                    self.assertNotIn("unexpected module load", run.stderr)
+                    self.assertFalse(launch_marker.exists())
 
     def test_profile_tp_override_matches_gpu_groups_and_launch_commands(self):
         # Run actual command construction, stopping before any server is started.
