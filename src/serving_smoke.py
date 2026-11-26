@@ -107,7 +107,10 @@ def run(name, output, experiment_python, tp=None, port=18001, proxy_port=18137, 
         # Resolve logical CUDA devices to physical UUIDs: Slurm can remap indices.
         uuids = [str(torch.cuda.get_device_properties(i).uuid) for i in range(torch.cuda.device_count())]
         uuids = [u if u.startswith(('GPU-', 'MIG-')) else 'GPU-' + u for u in uuids]
-        record.update(model_id=item['model_id'], revision=item['revision'], checkpoint=checkpoint,
+        api_model = item.get('served_model_name', item['model_id'])
+        record.update(registry_id=name, model_id=item['model_id'],
+                      checkpoint_model_id=item['model_id'],
+                      served_model_name=api_model, revision=item['revision'], checkpoint=checkpoint,
                       torch_cuda=torch.version.cuda, python=sys.version,
                       packages={n:importlib.metadata.version(n) for n in
                                 ('torch','vllm','transformers','mistral_common','openai-harmony')},
@@ -139,14 +142,14 @@ def run(name, output, experiment_python, tp=None, port=18001, proxy_port=18137, 
         sampler.start()
         base = f'http://127.0.0.1:{port}/v1'
         models = wait_ready(base + '/models', backend, started + startup_timeout)
-        if item['model_id'] not in {m['id'] for m in models['data']}:
+        if api_model not in {m['id'] for m in models['data']}:
             raise RuntimeError('Served identity mismatch')
         record.update(models=models, startup_seconds=time.monotonic() - started)
         samples.append(dict(gpu_sample(uuids), host_rss_kib=tree_rss(os.getpid())))
-        payload = {'model':item['model_id'], 'messages':[{'role':'user','content':'Calculate 17 times 23. Briefly verify your final answer.'}],
+        payload = {'model':api_model, 'messages':[{'role':'user','content':'Calculate 17 times 23. Briefly verify your final answer.'}],
                    'temperature':0, 'max_tokens':2048}
-        if item.get('reasoning'):
-            payload['reasoning_effort'] = 'medium'
+        if item.get('reasoning_effort_parameter'):
+            payload[item['reasoning_effort_parameter']] = 'medium'
         started = time.monotonic()
         reply = requests.post(base + '/chat/completions', json=payload, timeout=120)
         reply.raise_for_status()

@@ -4,6 +4,7 @@ Run from the repository root: python -m src.model_serving --help.
 Launches only staged local checkpoints; never downloads weights.
 """
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -56,7 +57,7 @@ def command(name, path=None, served_name=None, port=8001, host="0.0.0.0", tp=Non
     item = profile(name)
     path = path or model_path(name)
     return [os.getenv("JB_VLLM_BIN", "vllm"), "serve", path,
-            "--served-model-name", served_name or item["model_id"],
+            "--served-model-name", served_name or item.get("served_model_name", item["model_id"]),
             "--host", host, "--port", str(port),
             "--tensor-parallel-size", str(tp or item["tensor_parallel_size"]),
             "--max-model-len", str(max_len or item["max_model_len"]),
@@ -83,12 +84,20 @@ def validate_checkpoint(name, path):
         manifest = json.loads(manifest_path.read_text())
         if manifest.get("revision") != item.get("revision") or manifest.get("repo_id") != item["model_id"]:
             raise ValueError("Checkpoint integrity manifest identity does not match registry")
-        import hashlib
         for filename, expected in manifest["files"].items():
             file_path = path / filename
-            if not file_path.is_file() or file_path.stat().st_size != expected["bytes"]:
+            if not file_path.is_file():
+                raise ValueError(f"Checkpoint file missing: {file_path}")
+            if file_path.stat().st_size != expected["bytes"]:
                 raise ValueError(f"Checkpoint file missing or size mismatch: {file_path}")
-            digest = hashlib.sha256(file_path.read_bytes()).hexdigest()
+            with file_path.open("rb") as checkpoint_file:
+                if hasattr(hashlib, "file_digest"):
+                    digest = hashlib.file_digest(checkpoint_file, "sha256").hexdigest()
+                else:  # Python < 3.11 fallback; bounded to 1 MiB per read.
+                    hasher = hashlib.sha256()
+                    for chunk in iter(lambda: checkpoint_file.read(1024 * 1024), b""):
+                        hasher.update(chunk)
+                    digest = hasher.hexdigest()
             if digest != expected["sha256"]:
                 raise ValueError(f"Checkpoint SHA-256 mismatch: {file_path}")
     if "revision" in item and not item.get("checkpoint_manifest"):

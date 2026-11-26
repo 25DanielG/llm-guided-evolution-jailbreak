@@ -22,5 +22,9 @@ TP_ARGS=()
 if [[ -n "${JB_SERVE_TP:-}" ]]; then
     TP_ARGS=(--tp "$JB_SERVE_TP")
 fi
+MAX_LEN_ARGS=()
+if [[ -n "${JB_SERVE_MAX_LEN:-}" ]]; then
+    MAX_LEN_ARGS=(--max-len "$JB_SERVE_MAX_LEN")
+fi
 exec python3 -m src.model_serving serve --model "$JB_SERVE_MODEL" \
-    --port "${JB_SERVE_PORT:-8001}" --max-len "${JB_SERVE_MAX_LEN:-4096}" "${TP_ARGS[@]}"
+    --port "${JB_SERVE_PORT:-8001}" "${MAX_LEN_ARGS[@]}" "${TP_ARGS[@]}"

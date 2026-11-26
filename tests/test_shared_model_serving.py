@@ -59,6 +59,16 @@ class SharedModelTests(unittest.TestCase):
             args = json.loads(run.stdout.splitlines()[-1])
             self.assertEqual(args[args.index("--tp") + 1], "2")
             self.assertEqual(args[args.index("--model") + 1], "gpt-oss-120b")
+            self.assertNotIn("--max-len", args)  # Registry defaults remain authoritative.
+            env["JB_SERVE_MODEL"] = "inkling-2-mini-unbound-v21"
+            env["JB_UNBOUND_CHECKPOINT"] = "/approved/unbound"
+            env["JB_SERVE_MAX_LEN"] = "50000"
+            override = subprocess.run(["bash", "-c", 'module() { return 0; }; source "$1"',
+                                       "test", str(script)], env=env, capture_output=True,
+                                      text=True, timeout=10)
+            self.assertEqual(override.returncode, 0, override.stderr)
+            override_args = json.loads(override.stdout.splitlines()[-1])
+            self.assertEqual(override_args[override_args.index("--max-len") + 1], "50000")
 
     def test_profile_tp_override_matches_gpu_groups_and_launch_commands(self):
         # Run actual command construction, stopping before any server is started.
@@ -81,6 +91,13 @@ class SharedModelTests(unittest.TestCase):
             for role in ("TARGET", "JUDGE"):
                 line = next(line for line in run.stdout.splitlines() if line.startswith(role + "="))
                 self.assertIn("--tp 2", line)
+                self.assertNotIn("--max-len", line)
+            env["JB_TARGET_MAX_MODEL_LEN"] = "50000"
+            explicit = subprocess.run(["bash", "-c", script], env=env, capture_output=True,
+                                      text=True, timeout=15)
+            self.assertEqual(explicit.returncode, 0, explicit.stderr)
+            target_line = next(line for line in explicit.stdout.splitlines() if line.startswith("TARGET="))
+            self.assertIn("--max-len 50000", target_line)
             env["JB_RUN_TARGET_TP"] = "0"
             invalid = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, timeout=15)
             self.assertNotEqual(invalid.returncode, 0)
@@ -124,8 +141,13 @@ class SharedModelTests(unittest.TestCase):
         item = model_serving.profile("inkling-2-mini-unbound-v21")
         self.assertEqual(item["revision"], "ef74b44edd2851b8e8d221a7313f36c419590430")
         self.assertEqual(item["default_max_tokens"], 8192)
+        self.assertEqual(item["status"], "configured")
+        self.assertIn("CPU tested", item["generic_launcher_validation"])
         cmd = model_serving.command("inkling-2-mini-unbound-v21", served_name="unbound-v21")
         self.assertEqual(cmd[cmd.index("--served-model-name") + 1], "unbound-v21")
+        self.assertEqual(item["served_model_name"], "inkling-unbound-v21")
+        default_cmd = model_serving.command("inkling-2-mini-unbound-v21")
+        self.assertEqual(default_cmd[default_cmd.index("--served-model-name") + 1], item["served_model_name"])
         self.assertIn("inkling", cmd)
         with patch.dict(os.environ, {"JB_UNBOUND_CHECKPOINT": "/approved/unbound"}):
             self.assertEqual(model_serving.model_path("inkling-2-mini-unbound-v21"), "/approved/unbound")
@@ -146,7 +168,19 @@ class SharedModelTests(unittest.TestCase):
                 (path / "served_models.json").write_text(json.dumps({"models": {"inkling-2-mini-unbound-v21": item}}))
                 (path / "unbound-v21-checkpoint.json").write_text(json.dumps(manifest))
                 with patch.dict(os.environ, {"JB_UNBOUND_CHECKPOINT": str(path)}):
+                    (path / "other.safetensors").touch()
+                    (path / "model.safetensors").unlink()
+                    with self.assertRaisesRegex(ValueError, "Checkpoint file missing"):
+                        model_serving.validate_checkpoint("inkling-2-mini-unbound-v21", path)
+                    (path / "model.safetensors").write_bytes(payload[:-1])
+                    with self.assertRaisesRegex(ValueError, "size mismatch"):
+                        model_serving.validate_checkpoint("inkling-2-mini-unbound-v21", path)
+                    (path / "model.safetensors").write_bytes(payload)
                     model_serving.validate_checkpoint("inkling-2-mini-unbound-v21", path)
+                    with patch.object(Path, "read_bytes", side_effect=AssertionError("unbounded read")), \
+                         patch.object(__import__("hashlib"), "file_digest", wraps=__import__("hashlib").file_digest) as digest:
+                        model_serving.validate_checkpoint("inkling-2-mini-unbound-v21", path)
+                    digest.assert_called_once()
                     (path / "model.safetensors").write_bytes(b"test checkpoint weighTS")
                     with pytest.raises(ValueError, match="SHA-256 mismatch"):
                         model_serving.validate_checkpoint("inkling-2-mini-unbound-v21", path)
@@ -213,6 +247,9 @@ class SharedModelTests(unittest.TestCase):
         self.assertEqual(parsed["usage"]["prompt_tokens"], 10)
         self.assertEqual(parsed["logprobs"], {"content": []})
         self.assertEqual(parse_chat_response(response())["text"], "answer")
+        partial = parse_chat_response(response("partial answer", "reasoning", "length"))
+        self.assertEqual(partial["text"], "partial answer")
+        self.assertEqual(partial["finish_reason"], "length")
         for data in (response(None, "reasoning", "length"), response("", None, "tool_calls"),
                      response("<|start|>assistant<|channel|>analysis"), {"choices": []}):
             with self.assertRaises(RuntimeError):
@@ -247,6 +284,35 @@ class SharedModelTests(unittest.TestCase):
         self.assertEqual(payload["reasoning_effort"], "low")
         self.assertEqual(payload["top_p"], 0.9)
         self.assertIn("response_time_sec", result)
+
+    def test_unbound_reasoning_does_not_send_gpt_oss_effort_parameter(self):
+        reply = Mock()
+        reply.json.return_value = response("final", "reasoning")
+        env = {"JB_MUTATOR_PROFILE": "inkling-2-mini-unbound-v21",
+               "JB_MUTATOR_VLLM_URL": "http://fake/v1", "JB_MUTATOR_REASONING_EFFORT": "high"}
+        with patch.dict(os.environ, env), patch.object(mutator_proxy.requests, "post", return_value=reply) as post:
+            result = mutator_proxy.generate({"prompt": "question", "max_new_tokens": 8192,
+                                             "temperature": 0.1, "top_p": 0.9})
+        payload = post.call_args.kwargs["json"]
+        self.assertEqual(payload["model"], "inkling-unbound-v21")
+        self.assertNotIn("reasoning_effort", payload)
+        self.assertEqual(payload["max_tokens"], 8192)
+        self.assertEqual(result["generated_text"], "final")
+
+    def test_unbound_readiness_accepts_served_alias_only(self):
+        url = "http://fake/v1"
+        response_models = Mock()
+        response_models.json.return_value = {"data": [{"id": "inkling-unbound-v21"}]}
+        with patch.dict(os.environ, {"JB_MUTATOR_PROFILE": "inkling-2-mini-unbound-v21",
+                                    "JB_MUTATOR_VLLM_URL": url}), \
+             patch.object(mutator_proxy.requests, "get", return_value=response_models):
+            mutator_proxy.assert_ready()
+        response_models.json.return_value = {"data": [{"id": "nokeepai/Inkling-2-Mini-Unbound"}]}
+        with patch.dict(os.environ, {"JB_MUTATOR_PROFILE": "inkling-2-mini-unbound-v21",
+                                    "JB_MUTATOR_VLLM_URL": url}), \
+             patch.object(mutator_proxy.requests, "get", return_value=response_models), \
+             self.assertRaisesRegex(RuntimeError, "identity differs"):
+            mutator_proxy.assert_ready()
 
     def test_pace_endpoint_reuses_generate_without_legacy_launcher(self):
         profile_id = "RedHatAI/Muse-Glimmer-30B-FP8-block"

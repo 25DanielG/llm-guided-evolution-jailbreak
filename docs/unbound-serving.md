@@ -1,7 +1,11 @@
 # Inkling 2 Mini Unbound v2.1
 
-The `inkling-2-mini-unbound-v21` profile pins `nokeepai/Inkling-2-Mini-Unbound`
-to revision `ef74b44edd2851b8e8d221a7313f36c419590430`. The persistent approved
+Select Unbound with registry key `inkling-2-mini-unbound-v21`. That profile pins
+checkpoint repository `nokeepai/Inkling-2-Mini-Unbound` to revision
+`ef74b44edd2851b8e8d221a7313f36c419590430` and serves it under API model name
+`inkling-unbound-v21`. The registry key, checkpoint repository ID and served
+model name are separate identifiers; the launcher, `/v1/models` readiness check
+and mutator client use the served model name. The persistent approved
 snapshot is `${PACE_INFERENCE_STATE}/snapshots/inkling-unbound-v21/ef74b44edd2851b8e8d221a7313f36c419590430`.
 Set `JB_UNBOUND_CHECKPOINT` to that directory before using `src.model_serving`.
 The committed manifest records SHA-256 and byte counts for all 12 files; `check`
@@ -9,23 +13,29 @@ verifies them before launch. It does not download or stage model files.
 
 The checkpoint declares `Inkling2LoopForConditionalGeneration`,
 `model_type=inkling2_loop`, BF16 activations and NVFP4 weights. Its tokenizer and
-chat template are from the same pinned revision. The profile keeps the native
-Inkling reasoning parser and uses the qualified vLLM/Hopper runtime. The generic
-registry launcher can construct a vLLM command, but production deployment should
-use the qualified guarded PACE launcher/runtime, whose worker checks kernel paths
-and service readiness. That guarded launcher is maintained in the qualification
-checkout and is not copied or mutated by this adapter.
+chat template are from the same pinned revision. Checkpoint provenance is
+revision-pinned and hash-verified. Serving compatibility was previously
+demonstrated using the guarded PACE vLLM/Hopper implementation. This PR's generic
+registry integration has CPU tests only; its direct generic-launcher GPU loading,
+kernel selection and readiness have not been qualified. Registry status is
+`configured`, not a claim of live qualification. Production deployment should
+continue to use the guarded PACE launcher/runtime, whose worker checks kernel
+paths and readiness.
 
 Qualification evidence: one H200 serving; replay job 7350751 completed 62/62
 requests. Diagnostic job 7351445 completed successfully and reverified 12/12
 persistent files. The diagnostic used a 40,960-token serving context and tested
 budgets up to 8,192; maximum observed completion among rescued cases was 4,119
-tokens. Reasoning tokens are included in the OpenAI `max_tokens` allowance.
-Responses expose `reasoning` separately from final `content`; consumers should
-use `parse_chat_response`, which rejects empty final channels and non-`stop`
-finish reasons. The model metadata advertises a larger context, but that context
-has not been qualified here. Unbound was GPU-qualified on H200; H100 compatibility
-is expected from the Hopper kernel family but has not been independently tested.
+tokens. Reasoning tokens are included in the OpenAI `max_tokens` allowance. The
+native `inkling` reasoning parser exposes `reasoning` separately from final
+`content`; Unbound requests do not send GPT-OSS-specific `reasoning_effort`.
+`parse_chat_response` rejects malformed responses, tool calls and empty final
+content, but it preserves nonempty partial content when `finish_reason` is
+`length`. Callers that require a complete answer must check for
+`finish_reason == "stop"`; `serving_smoke` does this explicitly. The model
+metadata advertises a larger context, but that context has not been qualified
+here. Existing Unbound serving evidence is H200; H100 compatibility is not
+verified.
 
 Example after starting the qualified guarded service:
 

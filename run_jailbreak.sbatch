@@ -216,8 +216,10 @@ trap cleanup EXIT
 TARGET_COMMAND=("${JB_VLLM_BIN:-vllm}" serve "$TARGET_MODEL" --served-model-name target
     --host 0.0.0.0 --port 8001 --gpu-memory-utilization 0.9)
 if [[ -n "$TARGET_PROFILE" ]]; then
+    TARGET_LEN_ARGS=()
+    [[ -z "${JB_TARGET_MAX_MODEL_LEN:-}" ]] || TARGET_LEN_ARGS=(--max-len "$JB_TARGET_MAX_MODEL_LEN")
     TARGET_COMMAND=(python3 -m src.model_serving serve --model "$TARGET_PROFILE"
-        --served-name target --port 8001 --max-len "${JB_TARGET_MAX_MODEL_LEN:-4096}" --tp "$TARGET_TP")
+        --served-name target --port 8001 "${TARGET_LEN_ARGS[@]}" --tp "$TARGET_TP")
 fi
 JUDGE_COMMAND=("${JB_VLLM_BIN:-vllm}" serve "$JUDGE_MODEL" --served-model-name judge
     --host 0.0.0.0 --port 8002 --gpu-memory-utilization 0.9)
@@ -225,8 +227,10 @@ JUDGE_COMMAND=("${JB_VLLM_BIN:-vllm}" serve "$JUDGE_MODEL" --served-model-name j
 read -ra JUDGE_LEGACY_ARGS <<< "$JUDGE_EXTRA_ARGS"
 JUDGE_COMMAND+=("${JUDGE_LEGACY_ARGS[@]}")
 if [[ -n "$JUDGE_PROFILE" ]]; then
+    JUDGE_LEN_ARGS=()
+    [[ -z "${JUDGE_MAX_LEN:-}" ]] || JUDGE_LEN_ARGS=(--max-len "$JUDGE_MAX_LEN")
     JUDGE_COMMAND=(python3 -m src.model_serving serve --model "$JUDGE_PROFILE"
-        --served-name judge --port 8002 --max-len "${JUDGE_MAX_LEN:-4096}" --tp "$JUDGE_TP")
+        --served-name judge --port 8002 "${JUDGE_LEN_ARGS[@]}" --tp "$JUDGE_TP")
 fi
 
 # target vLLM (weaker model)
@@ -253,9 +257,11 @@ export JB_REPORTING_VLLM_URL="http://$HOST:8003/v1"
 export SERVER_HOSTNAME=$HOST
 echo "$HOST" > hostname.log
 if [[ -n "$MUTATOR_PROFILE" ]]; then
+    MUTATOR_LEN_ARGS=()
+    [[ -z "${JB_MUTATOR_MAX_MODEL_LEN:-}" ]] || MUTATOR_LEN_ARGS=(--max-len "$JB_MUTATOR_MAX_MODEL_LEN")
     MUT_VLLM_PID=$(start_with_retry "mutator vLLM" mutator_vllm.log \
         env CUDA_VISIBLE_DEVICES="$MUTATOR_DEV" python3 -m src.model_serving serve \
-        --model "$MUTATOR_PROFILE" --port 8004 --max-len "${JB_MUTATOR_MAX_MODEL_LEN:-4096}" --tp "$MUTATOR_TP") || exit 1
+        --model "$MUTATOR_PROFILE" --port 8004 "${MUTATOR_LEN_ARGS[@]}" --tp "$MUTATOR_TP") || exit 1
     export JB_MUTATOR_VLLM_URL="http://$HOST:8004/v1"
     # Proxy startup validates model identity, so wait for its backend first.
     deadline=$((SECONDS + ${JB_SERVER_READY_TIMEOUT:-1200}))
