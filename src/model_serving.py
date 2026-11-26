@@ -42,8 +42,13 @@ def endpoint_profile(name):
 
 
 def model_path(name):
+    item = profile(name)
+    if item.get("checkpoint_env"):
+        configured = os.getenv(item["checkpoint_env"])
+        if configured:
+            return str(Path(configured).expanduser())
     root = os.getenv("JB_SHARED_MODEL_ROOT", registry()["shared_model_root"])
-    return str(Path(root) / profile(name)["model_id"])
+    return str(Path(root) / item["model_id"])
 
 
 def command(name, path=None, served_name=None, port=8001, host="0.0.0.0", tp=None,
@@ -71,7 +76,22 @@ def validate_checkpoint(name, path):
     weight_pattern = "consolidated*.safetensors" if native_mistral else "*.safetensors"
     if not any(path.glob(weight_pattern)):
         raise ValueError(f"No safetensors weights at {path}")
-    if "revision" in item:
+    if item.get("checkpoint_manifest"):
+        manifest_path = REGISTRY.parent / item["checkpoint_manifest"]
+        if not manifest_path.is_file():
+            raise ValueError(f"Missing checkpoint integrity manifest: {manifest_path}")
+        manifest = json.loads(manifest_path.read_text())
+        if manifest.get("revision") != item.get("revision") or manifest.get("repo_id") != item["model_id"]:
+            raise ValueError("Checkpoint integrity manifest identity does not match registry")
+        import hashlib
+        for filename, expected in manifest["files"].items():
+            file_path = path / filename
+            if not file_path.is_file() or file_path.stat().st_size != expected["bytes"]:
+                raise ValueError(f"Checkpoint file missing or size mismatch: {file_path}")
+            digest = hashlib.sha256(file_path.read_bytes()).hexdigest()
+            if digest != expected["sha256"]:
+                raise ValueError(f"Checkpoint SHA-256 mismatch: {file_path}")
+    if "revision" in item and not item.get("checkpoint_manifest"):
         manifest = path / "deployment.json"
         if not manifest.is_file():
             raise ValueError(f"Missing {manifest}; record model_id and revision after staging")

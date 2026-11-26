@@ -79,6 +79,27 @@
       "backend": "vllm",
       "max_model_len": 4096,
       "max_num_seqs": 8
+    },
+    "inkling-2-mini-unbound-v21": {
+      "model_id": "nokeepai/Inkling-2-Mini-Unbound",
+      "revision": "ef74b44edd2851b8e8d221a7313f36c419590430",
+      "provider": "Nokeep AI (derived from Thinking Machines Inkling 2 Mini)",
+      "precision": "BF16 activations, NVFP4 weights",
+      "architecture": "Inkling2LoopForConditionalGeneration / inkling2_loop",
+      "tokenizer_revision": "ef74b44edd2851b8e8d221a7313f36c419590430",
+      "chat_template": "checkpoint chat_template.jinja; reasoning parser inkling",
+      "checkpoint_env": "JB_UNBOUND_CHECKPOINT",
+      "checkpoint_manifest": "unbound-v21-checkpoint.json",
+      "tensor_parallel_size": 1,
+      "gpu_memory_note": "Qualified on 1 x H200; one H100 supported by the same Hopper kernel family but Unbound was not separately qualified on H100.",
+      "status": "qualified",
+      "reasoning": true,
+      "default_max_tokens": 8192,
+      "max_output_tokens": 32768,
+      "vllm_args": ["--reasoning-parser", "inkling"],
+      "backend": "vllm",
+      "max_model_len": 40960,
+      "max_num_seqs": 1
     }
   }
 }
