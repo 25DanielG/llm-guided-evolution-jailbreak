@@ -116,6 +116,36 @@ class SharedModelTests(unittest.TestCase):
         cmd = model_serving.command("llama-3.3-70b")
         self.assertEqual(cmd[cmd.index("--tensor-parallel-size") + 1], "2")
         self.assertIn("bfloat16", cmd)
+
+    def test_unbound_profile_path_identity_and_budget(self):
+        item = model_serving.profile("inkling-2-mini-unbound-v21")
+        self.assertEqual(item["revision"], "ef74b44edd2851b8e8d221a7313f36c419590430")
+        self.assertEqual(item["default_max_tokens"], 8192)
+        cmd = model_serving.command("inkling-2-mini-unbound-v21", served_name="unbound-v21")
+        self.assertEqual(cmd[cmd.index("--served-model-name") + 1], "unbound-v21")
+        self.assertIn("inkling", cmd)
+        with patch.dict(os.environ, {"JB_UNBOUND_CHECKPOINT": "/approved/unbound"}):
+            self.assertEqual(model_serving.model_path("inkling-2-mini-unbound-v21"), "/approved/unbound")
+    def test_unbound_checkpoint_sha256_integrity(self):
+        import hashlib
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)
+            (path / "config.json").write_text('{"model_type":"inkling2_loop"}')
+            payload = b"test checkpoint weights"
+            (path / "model.safetensors").write_bytes(payload)
+            manifest_path = ROOT / "config/unbound-v21-checkpoint.json"
+            manifest = json.loads(manifest_path.read_text())
+            manifest["files"] = {"model.safetensors": {"bytes": len(payload), "sha256": hashlib.sha256(payload).hexdigest()}}
+            manifest["repo_id"] = model_serving.profile("inkling-2-mini-unbound-v21")["model_id"]
+            manifest["revision"] = model_serving.profile("inkling-2-mini-unbound-v21")["revision"]
+            with patch.object(model_serving, "REGISTRY", path / "served_models.json"):
+                (path / "served_models.json").write_text(json.dumps({"models": {"inkling-2-mini-unbound-v21": model_serving.profile("inkling-2-mini-unbound-v21")}}))
+                (path / "unbound-v21-checkpoint.json").write_text(json.dumps(manifest))
+                with patch.dict(os.environ, {"JB_UNBOUND_CHECKPOINT": str(path)}):
+                    model_serving.validate_checkpoint("inkling-2-mini-unbound-v21", path)
+                    (path / "model.safetensors").write_bytes(b"modified")
+                    with pytest.raises(ValueError, match="SHA-256 mismatch"):
+                        model_serving.validate_checkpoint("inkling-2-mini-unbound-v21", path)
         with self.assertRaises(ValueError):
             model_serving.profile("misspelled-model")
 
