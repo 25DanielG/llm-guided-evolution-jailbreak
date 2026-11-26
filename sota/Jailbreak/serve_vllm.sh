@@ -14,6 +14,8 @@ fi
 TARGET="${JB_TARGET_MODEL_PATH:-$HOME/scratch/llm_storage/Mistral-7B-Instruct-v0.2}"
 JUDGE="${JB_JUDGE_MODEL_PATH:-$HOME/scratch/llm_storage/Llama-3.1-8B-Instruct}"
 REPORTER="${JB_REPORTING_MODEL_PATH:-$HOME/scratch/llm_storage/HarmBench-Llama-2-13b-cls}"
+python3 "$HERE/../../src/model_serving.py" launch-check \
+    --launch-source="$TARGET" --launch-source="$JUDGE" --launch-source="$REPORTER"
 for path in "$TARGET" "$JUDGE" "$REPORTER"; do
     [[ -f "$path/config.json" ]] || { echo "Missing checkpoint: $path" >&2; exit 1; }
 done

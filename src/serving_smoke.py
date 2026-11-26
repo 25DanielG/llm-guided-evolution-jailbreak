@@ -4,6 +4,7 @@ import csv
 import importlib.metadata
 import json
 import os
+import platform
 from pathlib import Path
 import re
 import signal
@@ -14,8 +15,36 @@ import time
 import traceback
 import requests
 from src.chat_response import parse_chat_response
-from src.model_serving import command, model_path, profile, validate_checkpoint
+from src.model_serving import (check_legacy_launch_source, command, generic_launch_error,
+                               model_path, profile, validate_checkpoint)
 from src.run_status import atomic_json, utc
+
+DEFAULT_SMOKE_RUNTIME = {"python": "3.12", "vllm": "0.17.0", "torch": "2.10.0", "cuda": "12.9"}
+
+
+def validate_runtime(item, python_version, vllm_version, torch_version, cuda_version):
+    """Fail closed unless this profile's pinned serving runtime is active."""
+    expected = item.get("smoke_runtime", DEFAULT_SMOKE_RUNTIME)
+    actual = {"python": python_version, "vllm": vllm_version,
+              "torch": torch_version, "cuda": cuda_version}
+    mismatches = []
+    for key, wanted in expected.items():
+        got = actual[key]
+        matches = got == wanted
+        if key == "python" and wanted.count(".") == 1:
+            matches = got.rsplit(".", 1)[0] == wanted
+        if key == "torch" and "+" not in wanted:
+            matches = got.split("+", 1)[0] == wanted
+        if not matches:
+            mismatches.append(f"{key}: expected {wanted}, found {got}")
+    if mismatches:
+        raise RuntimeError("Serving runtime is incompatible with this model profile: " + "; ".join(mismatches))
+
+
+def require_supported_smoke_path(name, item):
+    error = generic_launch_error(name, item)
+    if error:
+        raise RuntimeError(error)
 
 
 def gpu_sample(device_uuids):
@@ -95,19 +124,23 @@ def run(name, output, experiment_python, tp=None, port=18001, proxy_port=18137, 
         if sys.version_info[:2] != (3,12) or (tp is not None and tp < 1):
             raise ValueError('Smoke requires Python 3.12 and a positive tensor parallel size')
         item = profile(name)
-        checkpoint = model_path(name)
-        validate_checkpoint(name, checkpoint)
         import torch
         import vllm
-        if (importlib.metadata.version('vllm') != '0.17.0' or torch.__version__.split('+')[0] != '2.10.0'
-                or torch.version.cuda != '12.9'):
-            raise RuntimeError('Serving runtime differs from requirements-serving.txt; use the separate pinned environment')
+        validate_runtime(item, platform.python_version(), importlib.metadata.version('vllm'),
+                         torch.__version__, torch.version.cuda)
+        require_supported_smoke_path(name, item)
+        checkpoint = model_path(name)
+        check_legacy_launch_source(checkpoint)
+        validate_checkpoint(name, checkpoint)
         if not torch.cuda.is_available() or torch.cuda.device_count() < (tp or item['tensor_parallel_size']):
             raise RuntimeError('Serving runtime cannot see the requested CUDA GPUs')
         # Resolve logical CUDA devices to physical UUIDs: Slurm can remap indices.
         uuids = [str(torch.cuda.get_device_properties(i).uuid) for i in range(torch.cuda.device_count())]
         uuids = [u if u.startswith(('GPU-', 'MIG-')) else 'GPU-' + u for u in uuids]
-        record.update(model_id=item['model_id'], revision=item['revision'], checkpoint=checkpoint,
+        api_model = item.get('served_model_name', item['model_id'])
+        record.update(registry_id=name, model_id=item['model_id'],
+                      checkpoint_model_id=item['model_id'],
+                      served_model_name=api_model, revision=item['revision'], checkpoint=checkpoint,
                       torch_cuda=torch.version.cuda, python=sys.version,
                       packages={n:importlib.metadata.version(n) for n in
                                 ('torch','vllm','transformers','mistral_common','openai-harmony')},
@@ -139,14 +172,14 @@ def run(name, output, experiment_python, tp=None, port=18001, proxy_port=18137, 
         sampler.start()
         base = f'http://127.0.0.1:{port}/v1'
         models = wait_ready(base + '/models', backend, started + startup_timeout)
-        if item['model_id'] not in {m['id'] for m in models['data']}:
+        if api_model not in {m['id'] for m in models['data']}:
             raise RuntimeError('Served identity mismatch')
         record.update(models=models, startup_seconds=time.monotonic() - started)
         samples.append(dict(gpu_sample(uuids), host_rss_kib=tree_rss(os.getpid())))
-        payload = {'model':item['model_id'], 'messages':[{'role':'user','content':'Calculate 17 times 23. Briefly verify your final answer.'}],
+        payload = {'model':api_model, 'messages':[{'role':'user','content':'Calculate 17 times 23. Briefly verify your final answer.'}],
                    'temperature':0, 'max_tokens':2048}
-        if item.get('reasoning'):
-            payload['reasoning_effort'] = 'medium'
+        if item.get('reasoning_effort_parameter'):
+            payload[item['reasoning_effort_parameter']] = 'medium'
         started = time.monotonic()
         reply = requests.post(base + '/chat/completions', json=payload, timeout=120)
         reply.raise_for_status()

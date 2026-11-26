@@ -246,6 +246,10 @@ def test_mock_smoke_orchestration_evidence_and_cleanup(tmp_path,monkeypatch,mode
     monkeypatch.setattr(torch.cuda,'get_device_properties',lambda n:SimpleNamespace(uuid='GPU-fixture'))
     monkeypatch.setattr(serving_smoke.importlib.metadata,'version',lambda n:'0.17.0' if n=='vllm' else 'fixture')
     monkeypatch.setattr(serving_smoke,'model_path',lambda n:str(checkpoint))
+    if model == 'inkling-2-mini-unbound-v21':
+        # This test uses synthetic checkpoint files; the separate integrity test
+        # exercises Unbound's committed 12-file manifest against fixture contents.
+        monkeypatch.setattr(serving_smoke,'validate_checkpoint',lambda *args:None)
     monkeypatch.setattr(serving_smoke,'gpu_sample',lambda uuids:{'at':run_status.utc(),
         'gpus':[{'uuid':'fixture-gpu','used_mib':100,'total_mib':80000}]})
     monkeypatch.setattr(serving_smoke.subprocess,'run',Mock(return_value=SimpleNamespace(stdout='fixture nvidia-smi')))
@@ -261,8 +265,10 @@ def test_mock_smoke_orchestration_evidence_and_cleanup(tmp_path,monkeypatch,mode
     kills = []
     monkeypatch.setattr(serving_smoke.os,'killpg',lambda pid,sig:kills.append((pid,sig)))
     monkeypatch.setattr(serving_smoke.subprocess,'Popen',FakeProcess)
-    monkeypatch.setattr(serving_smoke,'wait_ready',lambda *a:{'data':[{'id':item['model_id']}]})
+    monkeypatch.setattr(serving_smoke,'wait_ready',lambda *a:{'data':[{'id':item.get('served_model_name',item['model_id'])}]})
+    posted = []
     def reply(url,**kwargs):
+        posted.append((url, kwargs))
         data = {'generated_text':proxy_answer} if url.endswith('/generate') else {'choices':[{
             'message':{'content':answer,'reasoning':reasoning},'finish_reason':'stop'}]}
         return SimpleNamespace(raise_for_status=lambda:None,json=lambda:data)
@@ -274,6 +280,12 @@ def test_mock_smoke_orchestration_evidence_and_cleanup(tmp_path,monkeypatch,mode
     if passes:
         assert created[1].env['JB_MUTATOR_PROFILE']==model
         assert result['peak_observed_gpu_used_mib']['fixture-gpu']==100
+        request = posted[0][1]['json']
+        assert request['model'] == item.get('served_model_name', item['model_id'])
+        if item.get('reasoning_effort_parameter'):
+            assert request[item['reasoning_effort_parameter']] == 'medium'
+        else:
+            assert 'reasoning_effort' not in request
     # All values above are fixtures; no real inference or CUDA verification occurred.
 
 

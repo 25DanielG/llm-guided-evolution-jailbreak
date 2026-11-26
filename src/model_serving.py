@@ -4,6 +4,7 @@ Run from the repository root: python -m src.model_serving --help.
 Launches only staged local checkpoints; never downloads weights.
 """
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -42,21 +43,61 @@ def endpoint_profile(name):
 
 
 def model_path(name):
+    item = profile(name)
+    if item.get("checkpoint_env"):
+        configured = os.getenv(item["checkpoint_env"])
+        if configured:
+            return str(Path(configured).expanduser())
     root = os.getenv("JB_SHARED_MODEL_ROOT", registry()["shared_model_root"])
-    return str(Path(root) / profile(name)["model_id"])
+    return str(Path(root) / item["model_id"])
 
 
 def command(name, path=None, served_name=None, port=8001, host="0.0.0.0", tp=None,
             max_len=None):
+    """Build generic vLLM arguments for inspection or an already checked launch."""
     item = profile(name)
     path = path or model_path(name)
     return [os.getenv("JB_VLLM_BIN", "vllm"), "serve", path,
-            "--served-model-name", served_name or item["model_id"],
+            "--served-model-name", served_name or item.get("served_model_name", item["model_id"]),
             "--host", host, "--port", str(port),
             "--tensor-parallel-size", str(tp or item["tensor_parallel_size"]),
             "--max-model-len", str(max_len or item["max_model_len"]),
             "--max-num-seqs", str(item["max_num_seqs"]),
             "--gpu-memory-utilization", "0.9", *item["vllm_args"]]
+
+
+def guarded_launcher_message(name):
+    return (f"{name} requires the qualified guarded PACE Inkling launcher. "
+            "Generic serving does not apply its worker and kernel policy.")
+
+
+def generic_launch_error(name, item):
+    if item.get("smoke_mode", "generic") != "generic":
+        return guarded_launcher_message(name)
+    return None
+
+
+def check_legacy_launch_source(source):
+    """Check a raw vLLM model identifier or local directory before launch."""
+    for name, item in registry()["models"].items():
+        if source in (name, item["model_id"], item.get("served_model_name")):
+            error = generic_launch_error(name, item)
+            if error:
+                raise ValueError(error)
+            break
+
+    for alias, item in json.loads(PACE_REGISTRY.read_text()).items():
+        if item["runtime"] == "inkling" and source in (alias, item["repo"]):
+            raise ValueError(guarded_launcher_message(source))
+
+    # A raw path can point to Inkling under a different directory or symlink.
+    # Stock and Unbound share this guarded architecture and checkpoint config.
+    try:
+        config = json.loads((Path(source) / "config.json").read_text())
+    except (OSError, ValueError):
+        return  # The existing launcher handles missing or malformed checkpoints.
+    if isinstance(config, dict) and config.get("model_type") == "inkling2_loop":
+        raise ValueError(guarded_launcher_message(source))
 
 
 def validate_checkpoint(name, path):
@@ -71,7 +112,30 @@ def validate_checkpoint(name, path):
     weight_pattern = "consolidated*.safetensors" if native_mistral else "*.safetensors"
     if not any(path.glob(weight_pattern)):
         raise ValueError(f"No safetensors weights at {path}")
-    if "revision" in item:
+    if item.get("checkpoint_manifest"):
+        manifest_path = REGISTRY.parent / item["checkpoint_manifest"]
+        if not manifest_path.is_file():
+            raise ValueError(f"Missing checkpoint integrity manifest: {manifest_path}")
+        manifest = json.loads(manifest_path.read_text())
+        if manifest.get("revision") != item.get("revision") or manifest.get("repo_id") != item["model_id"]:
+            raise ValueError("Checkpoint integrity manifest identity does not match registry")
+        for filename, expected in manifest["files"].items():
+            file_path = path / filename
+            if not file_path.is_file():
+                raise ValueError(f"Checkpoint file missing: {file_path}")
+            if file_path.stat().st_size != expected["bytes"]:
+                raise ValueError(f"Checkpoint file missing or size mismatch: {file_path}")
+            with file_path.open("rb") as checkpoint_file:
+                if hasattr(hashlib, "file_digest"):
+                    digest = hashlib.file_digest(checkpoint_file, "sha256").hexdigest()
+                else:  # Python < 3.11 fallback; bounded to 1 MiB per read.
+                    hasher = hashlib.sha256()
+                    for chunk in iter(lambda: checkpoint_file.read(1024 * 1024), b""):
+                        hasher.update(chunk)
+                    digest = hasher.hexdigest()
+            if digest != expected["sha256"]:
+                raise ValueError(f"Checkpoint SHA-256 mismatch: {file_path}")
+    if "revision" in item and not item.get("checkpoint_manifest"):
         manifest = path / "deployment.json"
         if not manifest.is_file():
             raise ValueError(f"Missing {manifest}; record model_id and revision after staging")
@@ -82,9 +146,12 @@ def validate_checkpoint(name, path):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=["list", "path", "tp", "check", "command", "serve"])
+    parser.add_argument("action", choices=["list", "path", "tp", "check", "launch-check", "command", "serve"],
+                        help="command prints arguments for inspection; launch-check validates generic launch eligibility")
     parser.add_argument("--model")
     parser.add_argument("--model-path")
+    parser.add_argument("--launch-source", action="append", default=[],
+                        help="raw model ID or local path for launch-check; repeat for multiple sources")
     parser.add_argument("--served-name")
     parser.add_argument("--port", type=int, default=8001)
     parser.add_argument("--host", default="0.0.0.0")
@@ -94,10 +161,23 @@ def main():
     if args.action == "list":
         print(json.dumps(registry(), indent=2))
         return
-    if not args.model:
-        parser.error("--model is required")
     try:
+        if args.action == "launch-check":
+            if not args.model and not args.launch_source:
+                raise ValueError("launch-check requires --model or --launch-source")
+            if args.model:
+                error = generic_launch_error(args.model, profile(args.model))
+                if error:
+                    raise ValueError(error)
+            for source in args.launch_source:
+                check_legacy_launch_source(source)
+            return
+        if not args.model:
+            raise ValueError("--model is required")
         item = profile(args.model)
+        launch_error = generic_launch_error(args.model, item)
+        if args.action == "serve" and launch_error:
+            raise ValueError(launch_error)
         path = args.model_path or model_path(args.model)
         if args.action == "path":
             print(path)
@@ -111,8 +191,14 @@ def main():
                 raise ValueError("--max-len and --tp must be positive")
             cmd = command(args.model, path, args.served_name, args.port, args.host, args.tp, args.max_len)
             if args.action == "command":
-                print(shlex.join(cmd))
+                if launch_error:
+                    print(f"# Inspection only. {launch_error}")
+                    # Keep every line a comment, even if an argument contains a newline.
+                    print("# " + shlex.join(cmd).replace("\n", "\\n"))
+                else:
+                    print(shlex.join(cmd))
                 return
+            check_legacy_launch_source(path)
             if not os.getenv("SLURM_JOB_ID"):
                 raise ValueError("serve requires a Slurm GPU allocation")
             devices = [d for d in os.getenv("CUDA_VISIBLE_DEVICES", "").split(",") if d and d != "-1"]

@@ -22,6 +22,7 @@ import textwrap
 from transformers import AutoTokenizer
 from google import genai
 from google.genai import types
+from src.model_serving import endpoint_profile
 
 def retrieve_base_code(idx):
     """Retrieves base code for quality control."""
@@ -526,9 +527,38 @@ def get_llm_server_hostname():
         hostname = f.readline().strip() 
     return hostname
 
+def resolve_mutator_max_new_tokens(max_new_tokens=None):
+    """Resolve caller, environment, selected profile, then legacy output budget."""
+    profile_item = None
+    selected = os.getenv("JB_MUTATOR_PROFILE")
+    if selected:
+        try:
+            profile_item = endpoint_profile(selected)
+        except ValueError as error:
+            raise ValueError(f"Unknown JB_MUTATOR_PROFILE {selected!r}; cannot resolve generation budget") from error
+
+    configured = max_new_tokens
+    if configured is None:
+        configured = os.getenv("JB_MUTATOR_MAX_NEW_TOKENS")
+    if configured is None:
+        configured = (profile_item or {}).get("default_max_tokens", 850)
+
+    try:
+        budget = int(configured)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"Invalid max_new_tokens budget {configured!r}; expected a positive integer") from error
+    if isinstance(configured, float) and configured != budget:
+        raise ValueError(f"Invalid max_new_tokens budget {configured!r}; expected a positive integer")
+    if budget < 1:
+        raise ValueError(f"Invalid max_new_tokens budget {budget}; expected a positive integer")
+    maximum = (profile_item or {}).get("max_output_tokens")
+    if maximum is not None and budget > maximum:
+        raise ValueError(f"max_new_tokens budget {budget} exceeds the selected profile limit {maximum}")
+    return budget
+
+
 def submit_mixtral_local(prompt, max_new_tokens=None, temperature=0.2, top_p=0.15, server_url=None, return_gen=False):
-    if max_new_tokens is None:
-        max_new_tokens = int(os.getenv("JB_MUTATOR_MAX_NEW_TOKENS", "850"))
+    max_new_tokens = resolve_mutator_max_new_tokens(max_new_tokens)
     if server_url is None:
         server_url = f"http://{os.getenv('SERVER_HOSTNAME', 'localhost')}:{PORT}/generate"
     payload = {
