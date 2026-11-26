@@ -15,7 +15,8 @@ import time
 import traceback
 import requests
 from src.chat_response import parse_chat_response
-from src.model_serving import command, model_path, profile, validate_checkpoint
+from src.model_serving import (check_legacy_launch_source, command, generic_launch_error,
+                               model_path, profile, validate_checkpoint)
 from src.run_status import atomic_json, utc
 
 DEFAULT_SMOKE_RUNTIME = {"python": "3.12", "vllm": "0.17.0", "torch": "2.10.0", "cuda": "12.9"}
@@ -41,11 +42,9 @@ def validate_runtime(item, python_version, vllm_version, torch_version, cuda_ver
 
 
 def require_supported_smoke_path(name, item):
-    if item.get("smoke_mode", "generic") != "generic":
-        raise RuntimeError(
-            f"{name} must be validated through the qualified guarded PACE Inkling launcher; "
-            "the generic serving_smoke path does not reproduce its worker, kernel, or launcher guards"
-        )
+    error = generic_launch_error(name, item)
+    if error:
+        raise RuntimeError(error)
 
 
 def gpu_sample(device_uuids):
@@ -131,6 +130,7 @@ def run(name, output, experiment_python, tp=None, port=18001, proxy_port=18137, 
                          torch.__version__, torch.version.cuda)
         require_supported_smoke_path(name, item)
         checkpoint = model_path(name)
+        check_legacy_launch_source(checkpoint)
         validate_checkpoint(name, checkpoint)
         if not torch.cuda.is_available() or torch.cuda.device_count() < (tp or item['tensor_parallel_size']):
             raise RuntimeError('Serving runtime cannot see the requested CUDA GPUs')

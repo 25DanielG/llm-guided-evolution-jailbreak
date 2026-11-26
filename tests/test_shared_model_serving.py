@@ -1,7 +1,9 @@
 """Deterministic CPU contracts with fake inference; no deployment verification."""
 import ast
 import asyncio
+from contextlib import redirect_stderr, redirect_stdout
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -60,8 +62,6 @@ class SharedModelTests(unittest.TestCase):
             self.assertEqual(args[args.index("--tp") + 1], "2")
             self.assertEqual(args[args.index("--model") + 1], "gpt-oss-120b")
             self.assertNotIn("--max-len", args)  # Registry defaults remain authoritative.
-            env["JB_SERVE_MODEL"] = "inkling-2-mini-unbound-v21"
-            env["JB_UNBOUND_CHECKPOINT"] = "/approved/unbound"
             env["JB_SERVE_MAX_LEN"] = "50000"
             override = subprocess.run(["bash", "-c", 'module() { return 0; }; source "$1"',
                                        "test", str(script)], env=env, capture_output=True,
@@ -69,6 +69,42 @@ class SharedModelTests(unittest.TestCase):
             self.assertEqual(override.returncode, 0, override.stderr)
             override_args = json.loads(override.stdout.splitlines()[-1])
             self.assertEqual(override_args[override_args.index("--max-len") + 1], "50000")
+
+    def test_serving_wrapper_rejects_unbound_before_generic_runtime_setup(self):
+        env = {k: v for k, v in os.environ.items() if not k.startswith("JB_")}
+        env.update(SLURM_SUBMIT_DIR=str(ROOT), JB_SERVE_MODEL="inkling-2-mini-unbound-v21",
+                   REAL_PYTHON=sys.executable)
+        script = 'python3() { "$REAL_PYTHON" "$@"; }; module() { exit 91; }; source "$1"'
+        run = subprocess.run(["bash", "-c", script, "test", str(ROOT / "serve_model.sbatch")],
+                             env=env, capture_output=True, text=True, timeout=10)
+        self.assertEqual(run.returncode, 2, run.stderr)
+        self.assertIn("qualified guarded PACE Inkling launcher", run.stderr)
+        self.assertNotIn("Endpoint:", run.stdout)
+
+    def test_generic_wrappers_reject_guarded_raw_model_sources(self):
+        with tempfile.TemporaryDirectory() as temp:
+            checkpoint = Path(temp) / "checkpoint"
+            checkpoint.mkdir()
+            (checkpoint / "config.json").write_text('{"model_type":"inkling2_loop"}')
+            link = Path(temp) / "local-alias"
+            link.symlink_to(checkpoint, target_is_directory=True)
+            env = {k: v for k, v in os.environ.items() if not k.startswith("JB_")}
+            env.update(SLURM_SUBMIT_DIR=str(ROOT), TMPDIR=temp, REAL_PYTHON=sys.executable)
+            prefix = 'python3() { "$REAL_PYTHON" "$@"; }; module() { exit 91; }; source "$1"'
+            cases = [
+                ("run_jailbreak.sbatch", {"JB_RUN_MUTATOR_PROFILE": "inkling-2-mini-unbound-v21"}),
+                ("run_jailbreak.sbatch", {"JB_RUN_TARGET_MODEL": "nokeepai/Inkling-2-Mini-Unbound"}),
+                ("run_jailbreak.sbatch", {"JB_RUN_JUDGE_MODEL": str(link)}),
+                ("sota/Jailbreak/serve_vllm.sh", {"JB_REPORTING_MODEL_PATH": link.name,
+                                                "JB_TARGET_MODEL_PATH": str(Path(temp) / "missing")}),
+            ]
+            for script, settings in cases:
+                with self.subTest(script=script, settings=settings):
+                    run = subprocess.run(["bash", "-c", prefix, "test", str(ROOT / script)],
+                                         cwd=temp, env=dict(env, **settings), capture_output=True,
+                                         text=True, timeout=10)
+                    self.assertEqual(run.returncode, 2, run.stderr)
+                    self.assertIn("qualified guarded PACE Inkling launcher", run.stderr)
 
     def test_profile_tp_override_matches_gpu_groups_and_launch_commands(self):
         # Run actual command construction, stopping before any server is started.
@@ -161,7 +197,7 @@ class SharedModelTests(unittest.TestCase):
                                        runtime["torch"], runtime["cuda"])
         self.assertEqual(runtime["torch"], "2.14.0+cu132")
         self.assertEqual(runtime["cuda"], "13.2")
-        for field, value in (("python", "3.12.14"), ("vllm", "0.17.0"),
+        for field, value in (("python", "3.12.16"), ("vllm", "0.17.0"),
                              ("torch", "2.10.0+cu129"), ("cuda", "12.9")):
             actual = {"python": runtime["python"], "vllm": runtime["vllm"],
                       "torch": runtime["torch"], "cuda": runtime["cuda"]}
@@ -180,19 +216,72 @@ class SharedModelTests(unittest.TestCase):
     def test_unbound_smoke_fails_before_checkpoint_or_server_launch(self):
         import torch
         item = model_serving.profile("inkling-2-mini-unbound-v21")
+        runtime = item["smoke_runtime"]
         fake_vllm = types.ModuleType("vllm")
         with tempfile.TemporaryDirectory() as temp, \
              patch.dict(os.environ, {"SLURM_JOB_ID": "cpu-fixture", "CUDA_VISIBLE_DEVICES": "fixture"}), \
              patch.dict(sys.modules, {"vllm": fake_vllm}), \
-             patch.object(torch, "__version__", item["smoke_runtime"]["torch"]), \
-             patch.object(torch.version, "cuda", item["smoke_runtime"]["cuda"]), \
-             patch.object(serving_smoke.importlib.metadata, "version", return_value=item["smoke_runtime"]["vllm"]), \
+             patch.object(serving_smoke.platform, "python_version", return_value=runtime["python"]), \
+             patch.object(torch, "__version__", runtime["torch"]), \
+             patch.object(torch.version, "cuda", runtime["cuda"]), \
+             patch.object(serving_smoke.importlib.metadata, "version", return_value=runtime["vllm"]), \
              patch.object(serving_smoke, "validate_checkpoint", side_effect=AssertionError("hash should not run")), \
              patch.object(serving_smoke.subprocess, "Popen") as popen:
             result = serving_smoke.run("inkling-2-mini-unbound-v21", Path(temp) / "smoke", sys.executable)
         self.assertEqual(result["status"], "failed")
         self.assertIn("qualified guarded PACE Inkling launcher", result["error"])
         popen.assert_not_called()
+
+    def test_unbound_direct_serve_rejects_before_checkpoint_or_exec(self):
+        for model in ("inkling-2-mini-unbound-v21", "nokeepai/Inkling-2-Mini-Unbound"):
+            for env in ({}, {"SLURM_JOB_ID": "cpu-fixture", "CUDA_VISIBLE_DEVICES": "fixture"}):
+                argv = ["model_serving", "serve", "--model", model]
+                with self.subTest(model=model, env=env), patch.object(sys, "argv", argv), \
+                     patch.dict(os.environ, env, clear=True), redirect_stderr(io.StringIO()) as stderr, \
+                     patch.object(model_serving, "model_path") as path, \
+                     patch.object(model_serving, "validate_checkpoint") as verify, \
+                     patch.object(model_serving.os, "execvp") as execute:
+                    with self.assertRaises(SystemExit) as error:
+                        model_serving.main()
+                self.assertEqual(error.exception.code, 2)
+                self.assertIn("qualified guarded PACE Inkling launcher", stderr.getvalue())
+                path.assert_not_called()
+                verify.assert_not_called()
+                execute.assert_not_called()
+
+    def test_guarded_command_inspection_is_safe_as_shell_input(self):
+        argv = ["model_serving", "command", "--model", "inkling-2-mini-unbound-v21",
+                "--model-path", "/checkpoint\nexit 73\n#"]
+        with patch.object(sys, "argv", argv), redirect_stdout(io.StringIO()) as stdout, \
+             patch.dict(os.environ, {"JB_VLLM_BIN": "exit"}, clear=True), \
+             patch.object(model_serving, "validate_checkpoint") as verify, \
+             patch.object(model_serving.os, "execvp") as execute:
+            model_serving.main()
+        output = stdout.getvalue()
+        self.assertIn("Inspection only", output)
+        self.assertIn("qualified guarded PACE Inkling launcher", output)
+        self.assertIn("exit serve", output)
+        self.assertTrue(all(line.startswith("# ") for line in output.splitlines()))
+        shell = subprocess.run(["bash"], input=output, text=True, capture_output=True, timeout=10)
+        self.assertEqual(shell.returncode, 0, shell.stderr)
+        verify.assert_not_called()
+        execute.assert_not_called()
+
+    def test_generic_profiles_still_verify_and_exec_expected_command(self):
+        models = ("gpt-oss-20b", "gpt-oss-120b", "llama-3.3-70b", "mistral-7b", "devstral-small-2-24b")
+        env = {"SLURM_JOB_ID": "cpu-fixture", "CUDA_VISIBLE_DEVICES": "a,b", "JB_VLLM_BIN": "/fake/vllm"}
+        for model in models:
+            path = "/fixture/checkpoint"
+            argv = ["model_serving", "serve", "--model", model, "--model-path", path]
+            with self.subTest(model=model), patch.object(sys, "argv", argv), \
+                 patch.dict(os.environ, env, clear=True), redirect_stdout(io.StringIO()), \
+                 patch.object(model_serving, "validate_checkpoint") as verify, \
+                 patch.object(model_serving.os, "execvp") as execute:
+                expected = model_serving.command(model, path)
+                model_serving.main()
+            verify.assert_called_once_with(model, path)
+            execute.assert_called_once_with(expected[0], expected)
+
     def test_unbound_checkpoint_sha256_integrity(self):
         import hashlib
         with tempfile.TemporaryDirectory() as tmp:

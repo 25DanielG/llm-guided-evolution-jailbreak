@@ -15,12 +15,18 @@ The checkpoint declares `Inkling2LoopForConditionalGeneration`,
 `model_type=inkling2_loop`, BF16 activations and NVFP4 weights. Its tokenizer and
 chat template are from the same pinned revision. Checkpoint provenance is
 revision-pinned and hash-verified. Serving compatibility was previously
-demonstrated using the guarded PACE vLLM/Hopper implementation. This PR's generic
-registry integration has CPU tests only; its direct generic-launcher GPU loading,
-kernel selection and readiness have not been qualified. Registry status is
-`configured`, not a claim of live qualification. Production deployment should
-continue to use the guarded PACE launcher/runtime, whose worker checks kernel
-paths and readiness.
+demonstrated using the guarded PACE vLLM/Hopper implementation. The generic
+registry integration has CPU coverage and status `configured`. Unbound requires
+the qualified guarded PACE launcher, whose worker verifies the kernel policy
+and readiness. `src.model_serving serve`, `serve_model.sbatch` and the combined
+launcher reject Unbound before hashing weights or starting a service. The raw
+checkpoint launchers also reject local `inkling2_loop` checkpoints, including
+paths that reach them through symlinks.
+
+Use `src.model_serving list`, `path`, `tp` and `check` for registry inspection
+and checkpoint verification. For Unbound, `src.model_serving command` prints
+commented arguments for inspection only. Use the guarded procedure below to
+serve the model.
 
 The Unbound GPU-smoke runtime is pinned by the qualified `inkling.lock`: Python
 3.12.15, vLLM `0.34.1rc1.dev144+g94b13b3d8` (source revision
@@ -59,13 +65,6 @@ requests to 8,192 generated tokens. The Unbound profile caps this at 32,768,
 below its 40,960-token serving context; prompts still consume context, so a
 request whose prompt plus output allowance exceeds the configured context may
 be rejected by the server.
-
-When the combined `run_jailbreak.sbatch` launcher selects a manifest-backed
-checkpoint, it verifies the checkpoint before starting services. The serving
-process verifies it again immediately before loading. This intentionally hashes
-the checkpoint twice (about 19.5 GB for Unbound): the second check avoids
-trusting a caller-controlled skip flag or a stale preflight receipt and narrows
-the window for a checkpoint change between validation and model load.
 
 Example after starting the qualified guarded service:
 

@@ -13,6 +13,8 @@
 set -euo pipefail
 cd "$SLURM_SUBMIT_DIR"
 : "${JB_SERVE_MODEL:?Set JB_SERVE_MODEL to a registry key}"
+# Report guarded profiles before requiring or loading the generic runtime.
+python3 -m src.model_serving launch-check --model "$JB_SERVE_MODEL"
 : "${JB_VLLM_BIN:?Set JB_VLLM_BIN to the shared serving environment bin/vllm}"
 # Use the same CUDA module as the approved serving environment; do not select latest.
 : "${JB_CUDA_MODULE:?Set the CUDA module verified for this serving environment}"

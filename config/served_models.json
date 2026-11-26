@@ -94,11 +94,11 @@
       "checkpoint_env": "JB_UNBOUND_CHECKPOINT",
       "checkpoint_manifest": "unbound-v21-checkpoint.json",
       "tensor_parallel_size": 1,
-      "gpu_memory_note": "Existing guarded serving was qualified on 1 x H200. The generic registry launch path is CPU tested only; H100 has not been qualified.",
+      "gpu_memory_note": "Guarded serving was qualified on 1 x H200. H100 has not been qualified.",
       "status": "configured",
       "checkpoint_provenance": "12-file revision-pinned SHA-256 manifest verified",
       "serving_compatibility": "Previously qualified with the guarded PACE vLLM/Hopper implementation on 1 x H200",
-      "generic_launcher_validation": "CPU tested; live GPU loading and readiness not yet qualified",
+      "generic_launcher_validation": "CPU tested; generic GPU launch blocked because Unbound requires the guarded PACE launcher",
       "smoke_mode": "guarded-pace-only",
       "smoke_runtime": {
         "python": "3.12.15",

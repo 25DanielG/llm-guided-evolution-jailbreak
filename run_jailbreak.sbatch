@@ -22,20 +22,6 @@
 # Mutator is HF server.
 set -euo pipefail
 cd "$SLURM_SUBMIT_DIR"
-if [[ -n "${JB_RUN_TARGET_PROFILE:-}${JB_RUN_JUDGE_PROFILE:-}${JB_RUN_MUTATOR_PROFILE:-}" ]]; then
-    : "${JB_VLLM_BIN:?Profiles require the approved shared serving environment bin/vllm}"
-    : "${JB_CUDA_MODULE:?Profiles require the CUDA module verified for that environment}"
-    module load "$JB_CUDA_MODULE"
-else
-    module load cuda 2>/dev/null || true
-fi
-export PATH="$HOME/.local/bin:$PATH"          # uv + vllm CLIs
-export UV_CACHE_DIR="${TMPDIR:-/tmp}/uv-cache-${SLURM_JOB_ID}"
-mkdir -p "$UV_CACHE_DIR"
-
-# FlashInfer's sampler JIT-compiles with 'ninja' (absent on nodes) -> use native sampler.
-export VLLM_USE_FLASHINFER_SAMPLER=0
-
 TARGET_MODEL="${JB_RUN_TARGET_MODEL:-$HOME/scratch/llm_storage/Mistral-7B-Instruct-v0.2}"
 LLAMA_8B="$HOME/scratch/llm_storage/Llama-3.1-8B-Instruct"
 JUDGE_MODEL="${JB_RUN_JUDGE_MODEL:-$LLAMA_8B}"
@@ -49,6 +35,28 @@ REPORTING_MODEL="$HOME/scratch/llm_storage/HarmBench-Llama-2-13b-cls"
 TARGET_PROFILE="${JB_RUN_TARGET_PROFILE:-}"
 JUDGE_PROFILE="${JB_RUN_JUDGE_PROFILE:-}"
 MUTATOR_PROFILE="${JB_RUN_MUTATOR_PROFILE:-}"
+
+# Some legacy launches call vLLM directly, so check paths as well as profile IDs.
+python3 -m src.model_serving launch-check \
+    --launch-source="${TARGET_PROFILE:-$TARGET_MODEL}" \
+    --launch-source="${JUDGE_PROFILE:-$JUDGE_MODEL}" \
+    --launch-source="$REPORTING_MODEL" \
+    --launch-source="${MUTATOR_PROFILE:-$MUTATOR_MODEL}"
+
+if [[ -n "$TARGET_PROFILE$JUDGE_PROFILE$MUTATOR_PROFILE" ]]; then
+    : "${JB_VLLM_BIN:?Profiles require the approved shared serving environment bin/vllm}"
+    : "${JB_CUDA_MODULE:?Profiles require the CUDA module verified for that environment}"
+    module load "$JB_CUDA_MODULE"
+else
+    module load cuda 2>/dev/null || true
+fi
+export PATH="$HOME/.local/bin:$PATH"          # uv + vllm CLIs
+export UV_CACHE_DIR="${TMPDIR:-/tmp}/uv-cache-${SLURM_JOB_ID}"
+mkdir -p "$UV_CACHE_DIR"
+
+# FlashInfer's sampler JIT-compiles with 'ninja' (absent on nodes) -> use native sampler.
+export VLLM_USE_FLASHINFER_SAMPLER=0
+
 TARGET_TP=1
 MUTATOR_TP=1
 if [[ -n "$TARGET_PROFILE" ]]; then

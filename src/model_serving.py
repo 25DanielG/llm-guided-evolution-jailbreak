@@ -54,6 +54,7 @@ def model_path(name):
 
 def command(name, path=None, served_name=None, port=8001, host="0.0.0.0", tp=None,
             max_len=None):
+    """Build generic vLLM arguments for inspection or an already checked launch."""
     item = profile(name)
     path = path or model_path(name)
     return [os.getenv("JB_VLLM_BIN", "vllm"), "serve", path,
@@ -63,6 +64,36 @@ def command(name, path=None, served_name=None, port=8001, host="0.0.0.0", tp=Non
             "--max-model-len", str(max_len or item["max_model_len"]),
             "--max-num-seqs", str(item["max_num_seqs"]),
             "--gpu-memory-utilization", "0.9", *item["vllm_args"]]
+
+
+def guarded_launcher_message(name):
+    return (f"{name} requires the qualified guarded PACE Inkling launcher. "
+            "Generic serving does not apply its worker and kernel policy.")
+
+
+def generic_launch_error(name, item):
+    if item.get("smoke_mode", "generic") != "generic":
+        return guarded_launcher_message(name)
+    return None
+
+
+def check_legacy_launch_source(source):
+    """Check a raw vLLM model identifier or local directory before launch."""
+    for name, item in registry()["models"].items():
+        if source in (name, item["model_id"], item.get("served_model_name")):
+            error = generic_launch_error(name, item)
+            if error:
+                raise ValueError(error)
+            break
+
+    # A raw path can point to Inkling under a different directory or symlink.
+    # Stock and Unbound share this guarded architecture and checkpoint config.
+    try:
+        config = json.loads((Path(source) / "config.json").read_text())
+    except (OSError, ValueError):
+        return  # The existing launcher handles missing or malformed checkpoints.
+    if isinstance(config, dict) and config.get("model_type") == "inkling2_loop":
+        raise ValueError(guarded_launcher_message(source))
 
 
 def validate_checkpoint(name, path):
@@ -111,9 +142,12 @@ def validate_checkpoint(name, path):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=["list", "path", "tp", "check", "command", "serve"])
+    parser.add_argument("action", choices=["list", "path", "tp", "check", "launch-check", "command", "serve"],
+                        help="command prints arguments for inspection; launch-check validates generic launch eligibility")
     parser.add_argument("--model")
     parser.add_argument("--model-path")
+    parser.add_argument("--launch-source", action="append", default=[],
+                        help="raw model ID or local path for launch-check; repeat for multiple sources")
     parser.add_argument("--served-name")
     parser.add_argument("--port", type=int, default=8001)
     parser.add_argument("--host", default="0.0.0.0")
@@ -123,10 +157,23 @@ def main():
     if args.action == "list":
         print(json.dumps(registry(), indent=2))
         return
-    if not args.model:
-        parser.error("--model is required")
     try:
+        if args.action == "launch-check":
+            if not args.model and not args.launch_source:
+                raise ValueError("launch-check requires --model or --launch-source")
+            if args.model:
+                error = generic_launch_error(args.model, profile(args.model))
+                if error:
+                    raise ValueError(error)
+            for source in args.launch_source:
+                check_legacy_launch_source(source)
+            return
+        if not args.model:
+            raise ValueError("--model is required")
         item = profile(args.model)
+        launch_error = generic_launch_error(args.model, item)
+        if args.action == "serve" and launch_error:
+            raise ValueError(launch_error)
         path = args.model_path or model_path(args.model)
         if args.action == "path":
             print(path)
@@ -140,8 +187,14 @@ def main():
                 raise ValueError("--max-len and --tp must be positive")
             cmd = command(args.model, path, args.served_name, args.port, args.host, args.tp, args.max_len)
             if args.action == "command":
-                print(shlex.join(cmd))
+                if launch_error:
+                    print(f"# Inspection only. {launch_error}")
+                    # Keep every line a comment, even if an argument contains a newline.
+                    print("# " + shlex.join(cmd).replace("\n", "\\n"))
+                else:
+                    print(shlex.join(cmd))
                 return
+            check_legacy_launch_source(path)
             if not os.getenv("SLURM_JOB_ID"):
                 raise ValueError("serve requires a Slurm GPU allocation")
             devices = [d for d in os.getenv("CUDA_VISIBLE_DEVICES", "").split(",") if d and d != "-1"]
