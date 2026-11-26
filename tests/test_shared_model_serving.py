@@ -139,14 +139,15 @@ class SharedModelTests(unittest.TestCase):
             manifest_path = ROOT / "config/unbound-v21-checkpoint.json"
             manifest = json.loads(manifest_path.read_text())
             manifest["files"] = {"model.safetensors": {"bytes": len(payload), "sha256": hashlib.sha256(payload).hexdigest()}}
-            manifest["repo_id"] = model_serving.profile("inkling-2-mini-unbound-v21")["model_id"]
-            manifest["revision"] = model_serving.profile("inkling-2-mini-unbound-v21")["revision"]
+            item = model_serving.profile("inkling-2-mini-unbound-v21")
+            manifest["repo_id"] = item["model_id"]
+            manifest["revision"] = item["revision"]
             with patch.object(model_serving, "REGISTRY", path / "served_models.json"):
-                (path / "served_models.json").write_text(json.dumps({"models": {"inkling-2-mini-unbound-v21": model_serving.profile("inkling-2-mini-unbound-v21")}}))
+                (path / "served_models.json").write_text(json.dumps({"models": {"inkling-2-mini-unbound-v21": item}}))
                 (path / "unbound-v21-checkpoint.json").write_text(json.dumps(manifest))
                 with patch.dict(os.environ, {"JB_UNBOUND_CHECKPOINT": str(path)}):
                     model_serving.validate_checkpoint("inkling-2-mini-unbound-v21", path)
-                    (path / "model.safetensors").write_bytes(b"modified")
+                    (path / "model.safetensors").write_bytes(b"test checkpoint weighTS")
                     with pytest.raises(ValueError, match="SHA-256 mismatch"):
                         model_serving.validate_checkpoint("inkling-2-mini-unbound-v21", path)
         with self.assertRaises(ValueError):
