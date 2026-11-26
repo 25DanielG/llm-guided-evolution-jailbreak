@@ -99,6 +99,19 @@
       "checkpoint_provenance": "12-file revision-pinned SHA-256 manifest verified",
       "serving_compatibility": "Previously qualified with the guarded PACE vLLM/Hopper implementation on 1 x H200",
       "generic_launcher_validation": "CPU tested; live GPU loading and readiness not yet qualified",
+      "smoke_mode": "guarded-pace-only",
+      "smoke_runtime": {
+        "python": "3.12.15",
+        "vllm": "0.34.1rc1.dev144+g94b13b3d8",
+        "torch": "2.14.0+cu132",
+        "cuda": "13.2"
+      },
+      "qualified_runtime": {
+        "vllm_source_revision": "94b13b3d84562054f089e709ba1e32cf9a153bb7",
+        "triton": "3.8.0",
+        "gpu": "H200",
+        "worker": "guarded_worker.Worker"
+      },
       "reasoning": true,
       "default_max_tokens": 8192,
       "max_output_tokens": 32768,

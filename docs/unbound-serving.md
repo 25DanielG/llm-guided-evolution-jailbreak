@@ -22,6 +22,20 @@ kernel selection and readiness have not been qualified. Registry status is
 continue to use the guarded PACE launcher/runtime, whose worker checks kernel
 paths and readiness.
 
+The Unbound GPU-smoke runtime is pinned by the qualified `inkling.lock`: Python
+3.12.15, vLLM `0.34.1rc1.dev144+g94b13b3d8` (source revision
+`94b13b3d84562054f089e709ba1e32cf9a153bb7`), PyTorch `2.14.0+cu132`, CUDA
+13.2 libraries, and Triton 3.8.0. The recorded successful qualification used
+one H200 and `guarded_worker.Worker`, plus the reviewed FlashAttention and
+Humming kernel selections. Job records 7350751 and 7351445 show this runtime.
+These requirements are recorded for provenance; `src.serving_smoke` deliberately
+does not launch Unbound through its generic vLLM command, because that command
+does not reproduce the guarded worker and kernel policy. To GPU-validate Unbound,
+use the established guarded Unbound qualification workflow in the
+`inkling-qualification` checkout (the replay and completion-diagnostic job
+wrappers), with the pinned `runtimes/inkling` environment and an authorized H200
+allocation. Do not substitute the generic `serving_smoke` route.
+
 Qualification evidence: one H200 serving; replay job 7350751 completed 62/62
 requests. Diagnostic job 7351445 completed successfully and reverified 12/12
 persistent files. The diagnostic used a 40,960-token serving context and tested
@@ -36,6 +50,22 @@ content, but it preserves nonempty partial content when `finish_reason` is
 metadata advertises a larger context, but that context has not been qualified
 here. Existing Unbound serving evidence is H200; H100 compatibility is not
 verified.
+
+The `/generate` client selects its output ceiling in this order: explicit
+`max_new_tokens` argument, `JB_MUTATOR_MAX_NEW_TOKENS`, the selected registry
+profile's `default_max_tokens`, then the legacy 850-token fallback. Therefore
+selecting `JB_MUTATOR_PROFILE=inkling-2-mini-unbound-v21` defaults mutation
+requests to 8,192 generated tokens. The Unbound profile caps this at 32,768,
+below its 40,960-token serving context; prompts still consume context, so a
+request whose prompt plus output allowance exceeds the configured context may
+be rejected by the server.
+
+When the combined `run_jailbreak.sbatch` launcher selects a manifest-backed
+checkpoint, it verifies the checkpoint before starting services. The serving
+process verifies it again immediately before loading. This intentionally hashes
+the checkpoint twice (about 19.5 GB for Unbound): the second check avoids
+trusting a caller-controlled skip flag or a stale preflight receipt and narrows
+the window for a checkpoint change between validation and model load.
 
 Example after starting the qualified guarded service:
 

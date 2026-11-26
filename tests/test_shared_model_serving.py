@@ -15,7 +15,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from src import model_serving, mutator_proxy
+from src import model_serving, mutator_proxy, serving_smoke
 from src.chat_response import parse_chat_response
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -141,6 +141,8 @@ class SharedModelTests(unittest.TestCase):
         item = model_serving.profile("inkling-2-mini-unbound-v21")
         self.assertEqual(item["revision"], "ef74b44edd2851b8e8d221a7313f36c419590430")
         self.assertEqual(item["default_max_tokens"], 8192)
+        self.assertLessEqual(item["default_max_tokens"], item["max_output_tokens"])
+        self.assertLess(item["max_output_tokens"], item["max_model_len"])
         self.assertEqual(item["status"], "configured")
         self.assertIn("CPU tested", item["generic_launcher_validation"])
         cmd = model_serving.command("inkling-2-mini-unbound-v21", served_name="unbound-v21")
@@ -151,6 +153,46 @@ class SharedModelTests(unittest.TestCase):
         self.assertIn("inkling", cmd)
         with patch.dict(os.environ, {"JB_UNBOUND_CHECKPOINT": "/approved/unbound"}):
             self.assertEqual(model_serving.model_path("inkling-2-mini-unbound-v21"), "/approved/unbound")
+
+    def test_profile_specific_smoke_runtime_contract(self):
+        unbound = model_serving.profile("inkling-2-mini-unbound-v21")
+        runtime = unbound["smoke_runtime"]
+        serving_smoke.validate_runtime(unbound, runtime["python"], runtime["vllm"],
+                                       runtime["torch"], runtime["cuda"])
+        self.assertEqual(runtime["torch"], "2.14.0+cu132")
+        self.assertEqual(runtime["cuda"], "13.2")
+        for field, value in (("python", "3.12.14"), ("vllm", "0.17.0"),
+                             ("torch", "2.10.0+cu129"), ("cuda", "12.9")):
+            actual = {"python": runtime["python"], "vllm": runtime["vllm"],
+                      "torch": runtime["torch"], "cuda": runtime["cuda"]}
+            actual[field] = value
+            with self.subTest(field=field), self.assertRaisesRegex(RuntimeError, f"{field}: expected"):
+                serving_smoke.validate_runtime(unbound, actual["python"], actual["vllm"],
+                                               actual["torch"], actual["cuda"])
+        gpt_oss = model_serving.profile("gpt-oss-20b")
+        serving_smoke.validate_runtime(gpt_oss, "3.12.15", "0.17.0", "2.10.0+cu129", "12.9")
+        with self.assertRaisesRegex(RuntimeError, "vllm: expected 0.17.0"):
+            serving_smoke.validate_runtime(gpt_oss, "3.12.15", "0.34.1", "2.10.0+cu129", "12.9")
+        with self.assertRaisesRegex(RuntimeError, "qualified guarded PACE Inkling launcher"):
+            serving_smoke.require_supported_smoke_path("inkling-2-mini-unbound-v21", unbound)
+        serving_smoke.require_supported_smoke_path("gpt-oss-20b", gpt_oss)
+
+    def test_unbound_smoke_fails_before_checkpoint_or_server_launch(self):
+        import torch
+        item = model_serving.profile("inkling-2-mini-unbound-v21")
+        fake_vllm = types.ModuleType("vllm")
+        with tempfile.TemporaryDirectory() as temp, \
+             patch.dict(os.environ, {"SLURM_JOB_ID": "cpu-fixture", "CUDA_VISIBLE_DEVICES": "fixture"}), \
+             patch.dict(sys.modules, {"vllm": fake_vllm}), \
+             patch.object(torch, "__version__", item["smoke_runtime"]["torch"]), \
+             patch.object(torch.version, "cuda", item["smoke_runtime"]["cuda"]), \
+             patch.object(serving_smoke.importlib.metadata, "version", return_value=item["smoke_runtime"]["vllm"]), \
+             patch.object(serving_smoke, "validate_checkpoint", side_effect=AssertionError("hash should not run")), \
+             patch.object(serving_smoke.subprocess, "Popen") as popen:
+            result = serving_smoke.run("inkling-2-mini-unbound-v21", Path(temp) / "smoke", sys.executable)
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("qualified guarded PACE Inkling launcher", result["error"])
+        popen.assert_not_called()
     def test_unbound_checkpoint_sha256_integrity(self):
         import hashlib
         with tempfile.TemporaryDirectory() as tmp:
@@ -376,9 +418,10 @@ class SharedModelTests(unittest.TestCase):
         requests = Mock()
         requests.post.return_value.status_code = 200
         requests.post.return_value.json.return_value = {"generated_text": "answer"}
-        ns = load_functions("src/llm_utils.py", ["submit_mixtral_local"],
+        ns = load_functions("src/llm_utils.py", ["resolve_mutator_max_new_tokens", "submit_mixtral_local"],
                             {"os": os, "requests": requests, "PORT": 8137,
-                             "get_llm_server_hostname": lambda: "compute-host"})
+                             "get_llm_server_hostname": lambda: "compute-host",
+                             "endpoint_profile": model_serving.endpoint_profile})
         with patch.dict(os.environ, {"JB_MUTATOR_MAX_NEW_TOKENS": "2048"}):
             text, generator = ns["submit_mixtral_local"]("hello", return_gen=True)
             self.assertEqual(requests.post.call_args.kwargs["json"]["max_new_tokens"], 2048)
@@ -386,6 +429,43 @@ class SharedModelTests(unittest.TestCase):
             self.assertEqual(requests.post.call_args.kwargs["json"]["max_new_tokens"], 512)
         self.assertEqual(text, "answer")
         self.assertIs(generator, ns["submit_mixtral_local"])
+
+    def test_mutator_profile_generation_budget_precedence_and_validation(self):
+        ns = load_functions("src/llm_utils.py", ["resolve_mutator_max_new_tokens"],
+                            {"os": os, "endpoint_profile": model_serving.endpoint_profile})
+        resolve = ns["resolve_mutator_max_new_tokens"]
+        with patch.dict(os.environ, {"JB_MUTATOR_PROFILE": "inkling-2-mini-unbound-v21"}, clear=True):
+            self.assertEqual(resolve(), 8192)
+            self.assertEqual(resolve(1024), 1024)
+        with patch.dict(os.environ, {"JB_MUTATOR_PROFILE": "inkling-2-mini-unbound-v21",
+                                    "JB_MUTATOR_MAX_NEW_TOKENS": "4096"}, clear=True):
+            self.assertEqual(resolve(), 4096)
+            self.assertEqual(resolve(2048), 2048)  # Explicit caller argument wins.
+            with self.assertRaisesRegex(ValueError, "exceeds.*32768"):
+                resolve(32769)
+        with patch.dict(os.environ, {"JB_MUTATOR_PROFILE": "gpt-oss-20b"}, clear=True):
+            self.assertEqual(resolve(), 850)
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(resolve(), 850)
+        with patch.dict(os.environ, {"JB_MUTATOR_PROFILE": "inkling-2-mini-unbound-v21",
+                                    "JB_MUTATOR_MAX_NEW_TOKENS": "invalid"}, clear=True):
+            with self.assertRaisesRegex(ValueError, "positive integer"):
+                resolve()
+        for invalid in (0, -1, "bad"):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, "positive integer"):
+                resolve(invalid)
+
+    def test_unbound_default_budget_reaches_generate_proxy(self):
+        requests = Mock()
+        requests.post.return_value.status_code = 200
+        requests.post.return_value.json.return_value = {"generated_text": "answer"}
+        ns = load_functions("src/llm_utils.py", ["resolve_mutator_max_new_tokens", "submit_mixtral_local"],
+                            {"os": os, "requests": requests, "PORT": 8137,
+                             "get_llm_server_hostname": lambda: "compute-host",
+                             "endpoint_profile": model_serving.endpoint_profile})
+        with patch.dict(os.environ, {"JB_MUTATOR_PROFILE": "inkling-2-mini-unbound-v21"}, clear=True):
+            ns["submit_mixtral_local"]("hello")
+        self.assertEqual(requests.post.call_args.kwargs["json"]["max_new_tokens"], 8192)
 
     def test_jailbreak_client_preserves_logprobs_and_final_channel(self):
         spec = importlib.util.spec_from_file_location("shared_test_client", ROOT / "sota/Jailbreak/vllm_client.py")

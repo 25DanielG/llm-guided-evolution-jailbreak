@@ -4,6 +4,7 @@ import csv
 import importlib.metadata
 import json
 import os
+import platform
 from pathlib import Path
 import re
 import signal
@@ -16,6 +17,35 @@ import requests
 from src.chat_response import parse_chat_response
 from src.model_serving import command, model_path, profile, validate_checkpoint
 from src.run_status import atomic_json, utc
+
+DEFAULT_SMOKE_RUNTIME = {"python": "3.12", "vllm": "0.17.0", "torch": "2.10.0", "cuda": "12.9"}
+
+
+def validate_runtime(item, python_version, vllm_version, torch_version, cuda_version):
+    """Fail closed unless this profile's pinned serving runtime is active."""
+    expected = item.get("smoke_runtime", DEFAULT_SMOKE_RUNTIME)
+    actual = {"python": python_version, "vllm": vllm_version,
+              "torch": torch_version, "cuda": cuda_version}
+    mismatches = []
+    for key, wanted in expected.items():
+        got = actual[key]
+        matches = got == wanted
+        if key == "python" and wanted.count(".") == 1:
+            matches = got.rsplit(".", 1)[0] == wanted
+        if key == "torch" and "+" not in wanted:
+            matches = got.split("+", 1)[0] == wanted
+        if not matches:
+            mismatches.append(f"{key}: expected {wanted}, found {got}")
+    if mismatches:
+        raise RuntimeError("Serving runtime is incompatible with this model profile: " + "; ".join(mismatches))
+
+
+def require_supported_smoke_path(name, item):
+    if item.get("smoke_mode", "generic") != "generic":
+        raise RuntimeError(
+            f"{name} must be validated through the qualified guarded PACE Inkling launcher; "
+            "the generic serving_smoke path does not reproduce its worker, kernel, or launcher guards"
+        )
 
 
 def gpu_sample(device_uuids):
@@ -95,13 +125,13 @@ def run(name, output, experiment_python, tp=None, port=18001, proxy_port=18137, 
         if sys.version_info[:2] != (3,12) or (tp is not None and tp < 1):
             raise ValueError('Smoke requires Python 3.12 and a positive tensor parallel size')
         item = profile(name)
-        checkpoint = model_path(name)
-        validate_checkpoint(name, checkpoint)
         import torch
         import vllm
-        if (importlib.metadata.version('vllm') != '0.17.0' or torch.__version__.split('+')[0] != '2.10.0'
-                or torch.version.cuda != '12.9'):
-            raise RuntimeError('Serving runtime differs from requirements-serving.txt; use the separate pinned environment')
+        validate_runtime(item, platform.python_version(), importlib.metadata.version('vllm'),
+                         torch.__version__, torch.version.cuda)
+        require_supported_smoke_path(name, item)
+        checkpoint = model_path(name)
+        validate_checkpoint(name, checkpoint)
         if not torch.cuda.is_available() or torch.cuda.device_count() < (tp or item['tensor_parallel_size']):
             raise RuntimeError('Serving runtime cannot see the requested CUDA GPUs')
         # Resolve logical CUDA devices to physical UUIDs: Slurm can remap indices.

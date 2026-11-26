@@ -223,8 +223,7 @@ def test_staging_promotes_only_complete_revision_verified_download(tmp_path,monk
     ('devstral-small-2-24b',None,True,'391','READY',True),
     ('devstral-small-2-24b',None,False,'391','READY',False),
     ('gpt-oss-20b','fixture analysis',False,'400','READY',False),
-    ('gpt-oss-20b','fixture analysis',False,'391','NOT_READY',False),
-    ('inkling-2-mini-unbound-v21','fixture chain',False,'391','READY',True)])
+    ('gpt-oss-20b','fixture analysis',False,'391','NOT_READY',False)])
 def test_mock_smoke_orchestration_evidence_and_cleanup(tmp_path,monkeypatch,model,reasoning,fp8,answer,proxy_answer,passes):
     import torch
     import types
