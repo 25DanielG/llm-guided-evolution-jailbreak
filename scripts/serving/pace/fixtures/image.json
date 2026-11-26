@@ -1,0 +1,4 @@
+{
+  "prompt": "What is the dominant color of the image? Give the color name in your final answer.",
+  "expected": "\\bred\\b"
+}

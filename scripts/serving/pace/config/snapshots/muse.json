@@ -1,0 +1,46 @@
+{
+  "LICENSE": {
+    "bytes": 11358,
+    "git_blob": "d645695673349e3947e8e5ae42332d0ac3164cd7"
+  },
+  "README.md": {
+    "bytes": 2885,
+    "git_blob": "66f602a7f693376b663869074e2f09e2828b8d36"
+  },
+  "chat_template.jinja": {
+    "bytes": 7167,
+    "git_blob": "8a8673897ed588c171d50088c89e25360130abe6"
+  },
+  "config.json": {
+    "bytes": 6491,
+    "git_blob": "32cafc178bc2dc233af26153a6b6b7962d0262dd"
+  },
+  "generation_config.json": {
+    "bytes": 148,
+    "git_blob": "3495c31ea76c03c093a1d14e8221c3410b76ded2"
+  },
+  "model-00001-of-00002.safetensors": {
+    "bytes": 28176516456,
+    "sha256": "a7a144a0bfe2491c57e8f35e903a973777923879dfbe005642a4480a9dea94d8"
+  },
+  "model-00002-of-00002.safetensors": {
+    "bytes": 6216318704,
+    "sha256": "d532cf48fc25808b5f3fd5556cc2862705303d18362640796c43d2d51a3e44e0"
+  },
+  "model.safetensors.index.json": {
+    "bytes": 175404,
+    "git_blob": "ceaaa2d750e9c01f8329fff1bd4abfe1f5369896"
+  },
+  "processor_config.json": {
+    "bytes": 1084,
+    "git_blob": "ec9a07be13ea1dadf7395131871753b13f406c26"
+  },
+  "tokenizer.json": {
+    "bytes": 28129897,
+    "sha256": "c9dbee66967b58f31a7c27f723c3760da3526ccd0427578e8905b0abb0031c4d"
+  },
+  "tokenizer_config.json": {
+    "bytes": 79936,
+    "git_blob": "fe7f0bb90fb0d0288e3a505974ae0e4baf1d3e61"
+  }
+}

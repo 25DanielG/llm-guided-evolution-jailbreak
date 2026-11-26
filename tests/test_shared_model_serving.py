@@ -217,6 +217,27 @@ class SharedModelTests(unittest.TestCase):
         self.assertEqual(payload["top_p"], 0.9)
         self.assertIn("response_time_sec", result)
 
+    def test_pace_endpoint_reuses_generate_without_legacy_launcher(self):
+        profile_id = "RedHatAI/Muse-Glimmer-30B-FP8-block"
+        with self.assertRaises(ValueError):
+            model_serving.command("muse")
+        with tempfile.TemporaryDirectory() as temp:
+            key_file = Path(temp) / "api-key"
+            key_file.write_text("unit-test-placeholder")
+            reply = Mock()
+            reply.json.return_value = response("391", "parsed reasoning")
+            env = {"JB_MUTATOR_PROFILE": profile_id, "JB_MUTATOR_VLLM_URL": "http://fake/v1",
+                   "JB_MUTATOR_API_KEY_FILE": str(key_file)}
+            with patch.dict(os.environ, env), patch.object(mutator_proxy.requests, "post", return_value=reply) as post:
+                result = mutator_proxy.generate({"prompt": "17 times 23", "max_new_tokens": 32,
+                                                 "temperature": 0, "top_p": 1})
+        self.assertEqual(result["generated_text"], "391")
+        self.assertEqual(post.call_args.kwargs["json"]["model"], "muse")
+        self.assertNotIn("reasoning_effort", post.call_args.kwargs["json"])
+        self.assertEqual(post.call_args.kwargs["headers"], {"Authorization": "Bearer unit-test-placeholder"})
+        self.assertFalse(post.call_args.kwargs["allow_redirects"])
+        self.assertEqual(post.call_args.kwargs["proxies"], {"http": "", "https": "", "all": ""})
+
     def test_proxy_identity_mismatch_fails(self):
         reply = Mock()
         reply.json.return_value = {"data": [{"id": "some-other-model"}]}

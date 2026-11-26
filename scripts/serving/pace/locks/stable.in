@@ -1,0 +1,8 @@
+# Qualified with Python 3.12.15 on Linux x86_64.
+# Lightning and Super VL use PACE cuda/13.0.1 (NVCC 13.0.88) for Mamba SSU.
+vllm==0.34.0
+torch==2.14.0+cu130
+transformers==5.22.2
+triton==3.8.0
+flashinfer-python==0.7.3
+humming-kernels==0.1.19

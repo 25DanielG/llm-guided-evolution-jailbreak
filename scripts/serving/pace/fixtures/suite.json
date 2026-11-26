@@ -1,0 +1,36 @@
+{
+  "text": {
+    "prompt": "What is 17 multiplied by 23? Answer with only the number.",
+    "expected": "\\b391\\b"
+  },
+  "reasoning": {
+    "prompt": "A gardener has 17 trays with 23 seedlings per tray. Work out the total and state it in the final answer.",
+    "expected": "\\b391\\b"
+  },
+  "tools": {
+    "prompt": "Call the record_color tool with color set to red, exactly once. Do not reply with prose.",
+    "tool": {
+      "type": "function",
+      "function": {
+        "name": "record_color",
+        "description": "Record a color in the test fixture.",
+        "parameters": {
+          "type": "object",
+          "properties": {"color": {"type": "string"}},
+          "required": ["color"],
+          "additionalProperties": false
+        }
+      }
+    },
+    "expected": {"color": "red"}
+  },
+  "image": {
+    "prompt": "What single color fills this image? Answer with one word.",
+    "expected": "\\bred\\b"
+  },
+  "video": {
+    "prompt": "What single color fills the entire video? Answer with one word.",
+    "expected": "\\bred\\b"
+  },
+  "benchmark": "List the integers from 1 to 200 separated by commas."
+}

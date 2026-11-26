@@ -1,0 +1,4 @@
+{
+  "prompt": "What is 17 times 23? Give the integer as your final answer.",
+  "expected": "\\b391\\b"
+}

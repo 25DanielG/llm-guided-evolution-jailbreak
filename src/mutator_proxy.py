@@ -1,18 +1,29 @@
 """Optional vLLM transport behind the existing server.py /generate interface."""
 import os
+from pathlib import Path
 import time
 import requests
 from src.chat_response import parse_chat_response
-from src.model_serving import profile
+from src.model_serving import endpoint_profile
 
 
 def settings():
-    return os.environ["JB_MUTATOR_VLLM_URL"].rstrip("/"), profile(os.environ["JB_MUTATOR_PROFILE"])
+    return os.environ["JB_MUTATOR_VLLM_URL"].rstrip("/"), endpoint_profile(os.environ["JB_MUTATOR_PROFILE"])
+
+
+def auth_options():
+    if path := os.environ.get("JB_MUTATOR_API_KEY_FILE"):
+        key = Path(path).read_text().strip()
+        if not key:
+            raise ValueError("The configured mutator key file is empty")
+        return {"headers": {"Authorization": "Bearer " + key}, "allow_redirects": False,
+                "proxies": {"http": "", "https": "", "all": ""}}
+    return {}
 
 
 def assert_ready():
     url, item = settings()
-    response = requests.get(f"{url}/models", timeout=10)
+    response = requests.get(f"{url}/models", timeout=10, **auth_options())
     response.raise_for_status()
     if item["model_id"] not in {m["id"] for m in response.json()["data"]}:
         raise RuntimeError("Mutator vLLM model identity differs from JB_MUTATOR_PROFILE")
@@ -30,7 +41,7 @@ def generate(request):
         payload["reasoning_effort"] = effort
     started = time.monotonic()
     response = requests.post(f"{url}/chat/completions", json=payload,
-                             timeout=float(os.getenv("JB_REQUEST_TIMEOUT", "120")))
+                             timeout=float(os.getenv("JB_REQUEST_TIMEOUT", "120")), **auth_options())
     response.raise_for_status()
     result = parse_chat_response(response.json())
     return {"generated_text": result["text"], "response_time_sec": time.monotonic() - started,

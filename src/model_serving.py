@@ -10,6 +10,7 @@ from pathlib import Path
 import shlex
 
 REGISTRY = Path(__file__).resolve().parents[1] / "config" / "served_models.json"
+PACE_REGISTRY = REGISTRY.parents[1] / "scripts" / "serving" / "pace" / "config" / "models.json"
 
 
 def registry():
@@ -24,6 +25,20 @@ def profile(name):
         if item["model_id"] == name:
             return item
     raise ValueError(f"Unknown model {name!r}; choose from {', '.join(models)}")
+
+
+def endpoint_profile(name):
+    """Resolve a model already running behind an OpenAI-compatible endpoint."""
+    try:
+        return profile(name)
+    except ValueError:
+        pace = json.loads(PACE_REGISTRY.read_text())
+        for alias, item in pace.items():
+            if name in (alias, item["repo"]):
+                # PACE serves by alias. Its template and parser choices
+                # belong to the guarded launcher, separate from GPT-OSS.
+                return {"model_id": alias}
+        raise
 
 
 def model_path(name):
